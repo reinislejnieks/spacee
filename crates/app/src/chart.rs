@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use gpui_kit::*;
 use scan::{Kind, Tree};
-use sunburst::{Arc, Layout, Target};
+use sunburst::{DrawArc, Layout, Target};
 
 /// Gap between neighbouring arcs, in pixels.
 const GAP: f32 = 0.75;
@@ -18,6 +18,7 @@ pub fn geometry(bounds: Bounds<Pixels>) -> (Point<Pixels>, f32) {
 pub fn paint(
     tree: &Tree,
     layout: &Layout,
+    arcs: &[DrawArc],
     hovered: Option<Target>,
     dark: bool,
     bounds: Bounds<Pixels>,
@@ -25,8 +26,9 @@ pub fn paint(
 ) {
     let start = Instant::now();
     let (center, radius) = geometry(bounds);
-    for arc in layout.arcs() {
-        let (inner, outer) = layout.ring_radii(arc.depth, radius);
+    for arc in arcs {
+        let inner = layout.radius_at(arc.inner, radius);
+        let outer = layout.radius_at(arc.outer, radius);
         let color = color(tree, arc, hovered == Some(arc.target), dark);
         for (a0, a1) in halves(arc) {
             if let Some(path) = sector(center, inner + GAP, outer - GAP, a0, a1) {
@@ -35,16 +37,12 @@ pub fn paint(
         }
     }
     if std::env::var_os("SPACEE_PERF").is_some() {
-        eprintln!(
-            "paint: {} arcs in {:.2?}",
-            layout.arcs().count(),
-            start.elapsed()
-        );
+        eprintln!("paint: {} arcs in {:.2?}", arcs.len(), start.elapsed());
     }
 }
 
-fn color(tree: &Tree, arc: &Arc, hovered: bool, dark: bool) -> Hsla {
-    let depth = arc.depth as f32;
+pub fn color(tree: &Tree, arc: &DrawArc, hovered: bool, dark: bool) -> Hsla {
+    let depth = arc.inner;
     let (saturation, lightness) = match arc.target {
         Target::Smaller { .. } => (0.0, if dark { 0.35 } else { 0.72 }),
         Target::Node(id) => {
@@ -61,16 +59,17 @@ fn color(tree: &Tree, arc: &Arc, hovered: bool, dark: bool) -> Hsla {
         }
     };
     let lightness = if hovered { lightness + 0.15 } else { lightness };
-    hsla(arc.hue, saturation, lightness.min(0.92), 1.0)
+    hsla(arc.hue(), saturation, lightness.min(0.92), arc.opacity)
 }
 
 /// SVG-style arcs can't span a full circle, so arcs wider than half a turn are drawn in two pieces.
-fn halves(arc: &Arc) -> Vec<(f32, f32)> {
+fn halves(arc: &DrawArc) -> Vec<(f32, f32)> {
+    let end = arc.start + arc.sweep;
     if arc.sweep > PI {
         let mid = arc.start + arc.sweep / 2.0;
-        vec![(arc.start, mid), (mid, arc.end())]
+        vec![(arc.start, mid), (mid, end)]
     } else {
-        vec![(arc.start, arc.end())]
+        vec![(arc.start, end)]
     }
 }
 

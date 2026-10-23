@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::f32::consts::TAU;
 
 use scan::{Kind, NodeId, Tree};
@@ -21,7 +22,7 @@ impl Default for Options {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Target {
     Node(NodeId),
     /// Children of `parent` too small to draw on their own.
@@ -37,13 +38,29 @@ pub struct Arc {
     /// Radians clockwise from 12 o'clock.
     pub start: f32,
     pub sweep: f32,
-    /// Hue in `0..1` inherited from the ancestor in the innermost ring.
-    pub hue: f32,
 }
 
 impl Arc {
     pub fn end(&self) -> f32 {
         self.start + self.sweep
+    }
+}
+
+/// An arc ready to paint. Radii are in ring units: ring `n` spans `n..n + 1`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawArc {
+    pub target: Target,
+    pub inner: f32,
+    pub outer: f32,
+    pub start: f32,
+    pub sweep: f32,
+    pub opacity: f32,
+}
+
+impl DrawArc {
+    /// Hue in `0..1` from the arc's position around the circle.
+    pub fn hue(&self) -> f32 {
+        (self.start + self.sweep / 2.0) / TAU
     }
 }
 
@@ -64,7 +81,7 @@ pub enum Hit<'a> {
 impl Layout {
     pub fn new(tree: &Tree, focus: NodeId, options: Options) -> Self {
         let mut rings = vec![vec![]; options.max_depth];
-        place(tree, focus, 0, 0.0, TAU, None, &options, &mut rings);
+        place(tree, focus, 0, 0.0, TAU, &options, &mut rings);
         Self {
             focus,
             options,
@@ -76,14 +93,23 @@ impl Layout {
         self.rings.iter().flatten()
     }
 
-    /// Inner and outer radius of ring `depth` for a sunburst of outer radius `radius`.
-    pub fn ring_radii(&self, depth: usize, radius: f32) -> (f32, f32) {
+    pub fn draw_arcs(&self) -> Vec<DrawArc> {
+        self.arcs()
+            .map(|a| DrawArc {
+                target: a.target,
+                inner: a.depth as f32,
+                outer: a.depth as f32 + 1.0,
+                start: a.start,
+                sweep: a.sweep,
+                opacity: 1.0,
+            })
+            .collect()
+    }
+
+    /// Radius in pixels of the ring-unit position `ring` for a sunburst of outer radius `radius`.
+    pub fn radius_at(&self, ring: f32, radius: f32) -> f32 {
         let hole = radius * self.options.hole;
-        let width = (radius - hole) / self.options.max_depth as f32;
-        (
-            hole + width * depth as f32,
-            hole + width * (depth + 1) as f32,
-        )
+        hole + (radius - hole) * ring / self.options.max_depth as f32
     }
 
     /// What lies under the point `(x, y)`, relative to the center with y pointing down.
@@ -105,14 +131,12 @@ impl Layout {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn place(
     tree: &Tree,
     id: NodeId,
     depth: usize,
     start: f32,
     sweep: f32,
-    hue: Option<f32>,
     options: &Options,
     rings: &mut [Vec<Arc>],
 ) {
@@ -129,13 +153,11 @@ fn place(
             smaller += child_sweep;
             continue;
         }
-        let child_hue = hue.unwrap_or((cursor + child_sweep / 2.0) / TAU);
         rings[depth].push(Arc {
             target: Target::Node(child_id),
             depth,
             start: cursor,
             sweep: child_sweep,
-            hue: child_hue,
         });
         if child.kind == Kind::Dir {
             place(
@@ -144,7 +166,6 @@ fn place(
                 depth + 1,
                 cursor,
                 child_sweep,
-                Some(child_hue),
                 options,
                 rings,
             );
@@ -157,8 +178,117 @@ fn place(
             depth,
             start: cursor,
             sweep: smaller,
-            hue: hue.unwrap_or((cursor + smaller / 2.0) / TAU),
         });
+    }
+}
+
+/// The frame `t` (`0..=1`) of the zoom from `from` to `to`, where one focus is an
+/// ancestor of the other. The view moves like a camera from one focus to the other.
+/// Arcs present in both layouts move continuously; the rest fade, and anything
+/// pushed outside the circle is clipped.
+pub fn zoom(tree: &Tree, from: &Layout, to: &Layout, t: f32) -> Vec<DrawArc> {
+    let (outer, inner, u) = if is_ancestor(tree, from.focus, to.focus) {
+        (from, to, t)
+    } else if is_ancestor(tree, to.focus, from.focus) {
+        (to, from, 1.0 - t)
+    } else {
+        return to.draw_arcs();
+    };
+    let focus = span(tree, outer.focus, inner.focus);
+    let camera = Span {
+        depth: lerp(-1.0, focus.depth, u),
+        start: lerp(0.0, focus.start, u),
+        sweep: lerp(TAU, focus.sweep, u),
+    };
+    let max = outer.options.max_depth as f32;
+    let shared: HashSet<Target> = inner.arcs().map(|a| a.target).collect();
+    let in_outer: HashSet<Target> = outer.arcs().map(|a| a.target).collect();
+
+    let outer_arcs = outer
+        .arcs()
+        .filter(|a| !shared.contains(&a.target))
+        .map(|a| (a, a.depth as f32, a.start, a.sweep, 1.0 - u));
+    let inner_arcs = inner.arcs().map(|a| {
+        let opacity = if in_outer.contains(&a.target) { 1.0 } else { u };
+        let scale = focus.sweep / TAU;
+        let start = focus.start + a.start * scale;
+        (
+            a,
+            a.depth as f32 + focus.depth + 1.0,
+            start,
+            a.sweep * scale,
+            opacity,
+        )
+    });
+    outer_arcs
+        .chain(inner_arcs)
+        .filter_map(|(a, depth, start, sweep, opacity)| {
+            let ring = depth - camera.depth - 1.0;
+            let to_view =
+                |angle: f32| ((angle - camera.start) / camera.sweep * TAU).clamp(0.0, TAU);
+            let (s, e) = (to_view(start), to_view(start + sweep));
+            let (r0, r1) = (ring.max(0.0), (ring + 1.0).min(max));
+            (opacity > 0.0 && e > s && r1 > r0).then_some(DrawArc {
+                target: a.target,
+                inner: r0,
+                outer: r1,
+                start: s,
+                sweep: e - s,
+                opacity,
+            })
+        })
+        .collect()
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+pub fn is_ancestor(tree: &Tree, ancestor: NodeId, mut node: NodeId) -> bool {
+    loop {
+        if node == ancestor {
+            return true;
+        }
+        match tree.node(node).parent {
+            Some(parent) => node = parent,
+            None => return false,
+        }
+    }
+}
+
+/// Where `descendant` sits in the layout focused on `ancestor`, which itself is ring -1.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Span {
+    depth: f32,
+    start: f32,
+    sweep: f32,
+}
+
+fn span(tree: &Tree, ancestor: NodeId, descendant: NodeId) -> Span {
+    let mut path = vec![];
+    let mut node = descendant;
+    while node != ancestor {
+        path.push(node);
+        node = tree.node(node).parent.expect("descendant of ancestor");
+    }
+    let (mut depth, mut start, mut sweep) = (-1.0, 0.0_f64, TAU as f64);
+    for &child in path.iter().rev() {
+        let parent = tree.node(tree.node(child).parent.unwrap());
+        let before: u64 = parent
+            .children
+            .iter()
+            .take_while(|&&c| c != child)
+            .map(|&c| tree.node(c).size)
+            .sum();
+        let size = parent.size.max(1) as f64;
+        start += sweep * before as f64 / size;
+        sweep *= tree.node(child).size as f64 / size;
+        depth += 1.0;
+    }
+    Span {
+        depth,
+        start: start as f32,
+        sweep: sweep as f32,
     }
 }
 
@@ -238,7 +368,6 @@ mod tests {
                     "{} has no enclosing parent",
                     named(&tree, child)
                 );
-                assert_eq!(parent.unwrap().hue, child.hue);
             }
         }
         assert!(!layout.rings[2].is_empty(), "big/deep/z reaches ring 2");
@@ -285,7 +414,7 @@ mod tests {
         let (_dir, tree) = fixture(&[("a", 300_000), ("b", 100_000)]);
         let layout = Layout::new(&tree, tree.root(), Options::default());
         let radius = 100.0;
-        let (inner, outer) = layout.ring_radii(0, radius);
+        let (inner, outer) = (layout.radius_at(0.0, radius), layout.radius_at(1.0, radius));
         let mid = (inner + outer) / 2.0;
 
         for arc in &layout.rings[0] {
@@ -300,7 +429,7 @@ mod tests {
         }
         assert_eq!(layout.hit(0.0, 0.0, radius), Some(Hit::Center));
         assert_eq!(layout.hit(radius, radius, radius), None);
-        let (_, outer1) = layout.ring_radii(1, radius);
+        let outer1 = layout.radius_at(2.0, radius);
         assert_eq!(
             layout.hit(0.0, -(outer + outer1) / 2.0, radius),
             None,
@@ -312,7 +441,7 @@ mod tests {
     fn first_arc_starts_at_twelve_oclock_and_runs_clockwise() {
         let (_dir, tree) = fixture(&[("a", 300_000), ("b", 100_000)]);
         let layout = Layout::new(&tree, tree.root(), Options::default());
-        let (inner, outer) = layout.ring_radii(0, 100.0);
+        let (inner, outer) = (layout.radius_at(0.0, 100.0), layout.radius_at(1.0, 100.0));
         let mid = (inner + outer) / 2.0;
         let just_right_of_top = (mid * 0.01_f32.sin(), -mid * 0.01_f32.cos());
         let Some(Hit::Arc(arc)) = layout.hit(just_right_of_top.0, just_right_of_top.1, 100.0)
@@ -320,5 +449,103 @@ mod tests {
             panic!("no arc at top");
         };
         assert_eq!(named(&tree, arc), "a");
+    }
+
+    fn visible(mut arcs: Vec<DrawArc>) -> Vec<(Target, i32, i32, i32, i32)> {
+        let q = |v: f32| (v * 1000.0).round() as i32;
+        arcs.retain(|a| a.opacity > 0.0);
+        assert!(
+            arcs.iter().all(|a| a.opacity == 1.0),
+            "an endpoint frame has no half-faded arcs"
+        );
+        let mut out: Vec<_> = arcs
+            .iter()
+            .map(|a| (a.target, q(a.inner), q(a.outer), q(a.start), q(a.sweep)))
+            .collect();
+        out.sort_by_key(|&(t, ..)| format!("{t:?}"));
+        out
+    }
+
+    fn nested() -> (tempfile::TempDir, Tree) {
+        fixture(&[
+            ("big/x/1", 300_000),
+            ("big/x/2", 100_000),
+            ("big/y", 200_000),
+            ("other/z", 250_000),
+            ("other/w", 50_000),
+            ("file", 150_000),
+        ])
+    }
+
+    fn child_named(tree: &Tree, parent: NodeId, name: &str) -> NodeId {
+        *tree
+            .node(parent)
+            .children
+            .iter()
+            .find(|&&c| &*tree.node(c).name == name)
+            .unwrap()
+    }
+
+    #[test]
+    fn zoom_starts_at_the_old_view_and_ends_at_the_new_one() {
+        let (_dir, tree) = nested();
+        let other = child_named(&tree, tree.root(), "other");
+        let parent = Layout::new(&tree, tree.root(), Options::default());
+        let child = Layout::new(&tree, other, Options::default());
+
+        for (from, to) in [(&parent, &child), (&child, &parent)] {
+            assert_eq!(
+                visible(zoom(&tree, from, to, 0.0)),
+                visible(from.draw_arcs())
+            );
+            assert_eq!(visible(zoom(&tree, from, to, 1.0)), visible(to.draw_arcs()));
+        }
+    }
+
+    #[test]
+    fn zoom_across_several_levels_ends_at_the_new_view() {
+        let (_dir, tree) = nested();
+        let x = child_named(&tree, child_named(&tree, tree.root(), "big"), "x");
+        let root = Layout::new(&tree, tree.root(), Options::default());
+        let deep = Layout::new(&tree, x, Options::default());
+        assert_eq!(
+            visible(zoom(&tree, &deep, &root, 1.0)),
+            visible(root.draw_arcs())
+        );
+        assert_eq!(
+            visible(zoom(&tree, &root, &deep, 1.0)),
+            visible(deep.draw_arcs())
+        );
+    }
+
+    #[test]
+    fn mid_zoom_stays_inside_the_circle() {
+        let (_dir, tree) = nested();
+        let big = child_named(&tree, tree.root(), "big");
+        let from = Layout::new(&tree, tree.root(), Options::default());
+        let to = Layout::new(&tree, big, Options::default());
+        for i in 0..=10 {
+            for a in zoom(&tree, &from, &to, i as f32 / 10.0) {
+                assert!(a.start >= 0.0 && a.start + a.sweep <= TAU + 1e-5, "{a:?}");
+                assert!(
+                    a.inner >= 0.0 && a.outer <= 5.0 && a.inner < a.outer,
+                    "{a:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn zoomed_in_child_sits_where_its_arc_was() {
+        let (_dir, tree) = nested();
+        let big = child_named(&tree, tree.root(), "big");
+        let layout = Layout::new(&tree, tree.root(), Options::default());
+        let arc = layout
+            .arcs()
+            .find(|a| a.target == Target::Node(big))
+            .unwrap();
+        let s = span(&tree, tree.root(), big);
+        assert_eq!((s.depth, s.start), (0.0, arc.start));
+        assert!((s.sweep - arc.sweep).abs() < 1e-5);
     }
 }

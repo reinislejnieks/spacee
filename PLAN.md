@@ -81,9 +81,9 @@ pub struct Arc {
 ```
 
 - **Layout.** Recurse from the focus. A child's sweep is `parent_sweep * child.size / parent.size`. Children below the minimum angle are merged into one aggregate arc.
-- **Color.** Each top-level child of the focus gets a hue spread around the wheel (golden-angle steps, so neighbors differ). Deeper rings keep their ancestor's hue and lighten or desaturate with depth. Files are drawn slightly duller than directories. Hue tells you which subtree, lightness tells you how deep.
+- **Color.** Each arc's hue comes from its own position around the circle, so the wheel reads as a rainbow and a folder's children sit in neighbouring hues. Rings lighten and desaturate with depth, and files are duller than directories. Hue tells you where a subtree is, lightness tells you how deep. Zooming recolors the view. (The first version gave each subtree its ancestor's hue; with few top-level folders that left the chart two-tone.)
 - **Hit testing.** Do it with math, not per-path checks. Convert the cursor to polar coordinates (r, θ) relative to the center. The ring index is `r / ring_width`. Then binary-search the arcs of that ring by `start`. This costs O(log n) per mouse move.
-- **Zoom transitions.** `interpolate(from: &[Arc], to: &[Arc], t: f32)` matches arcs by `NodeId` and tweens start, sweep and depth. The app drives `t` from 0 to 1 over ~300 ms with ease-out.
+- **Zoom transitions.** `zoom(tree, from, to, t)` moves a camera: the visible angle range and ring offset interpolate between the two foci (one is always an ancestor of the other, so the path between them fixes the geometry). Arcs in both layouts move continuously, the rest fade, and anything pushed outside the circle is clipped. The app runs `t` from 0 to 1 over 350 ms with a cubic ease-out.
 
 This crate is the best place for unit tests: sweeps sum to 2π per ring, the aggregate threshold works, hit tests land on the right node, and interpolation endpoints equal the inputs.
 
