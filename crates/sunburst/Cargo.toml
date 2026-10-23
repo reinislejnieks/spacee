@@ -1,0 +1,10 @@
+[package]
+name = "sunburst"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+scan = { path = "../scan" }
+
+[dev-dependencies]
+tempfile = "3"

@@ -5,3 +5,5 @@ version.workspace = true
 
 [dependencies]
 gpui-kit.workspace = true
+scan = { path = "../scan" }
+sunburst = { path = "../sunburst" }
