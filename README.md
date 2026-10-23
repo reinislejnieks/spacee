@@ -75,6 +75,12 @@ cargo clippy --workspace --all-targets
 cargo fmt
 ```
 
+A pre-commit hook in `.githooks` runs `cargo fmt --check` and `cargo clippy -- -D warnings` and blocks the commit if either fails. Enable it once per clone:
+
+```sh
+git config core.hooksPath .githooks
+```
+
 The workspace has three crates:
 
 - `crates/scan` walks the filesystem in parallel and builds the size tree. It counts allocated bytes, counts hard links once, and does not follow symlinks or cross onto other volumes.
