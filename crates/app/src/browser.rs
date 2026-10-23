@@ -47,6 +47,10 @@ impl Browser {
         }
     }
 
+    pub fn root_name(&self) -> String {
+        display_name(&self.tree, self.tree.root())
+    }
+
     fn focus(&mut self, id: NodeId, cx: &mut Context<Self>) {
         if id == self.layout.focus || self.tree.node(id).kind != Kind::Dir {
             return;
@@ -346,7 +350,7 @@ fn describe(tree: &Tree, layout: &Layout, target: Target) -> (String, String) {
 }
 
 /// Decimal units, as Finder reports sizes.
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
     let mut unit = 0;

@@ -5915,7 +5915,10 @@ name = "spacee"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "libc",
  "scan",
+ "serde",
+ "serde_json",
  "sunburst",
 ]
 

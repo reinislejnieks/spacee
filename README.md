@@ -2,7 +2,7 @@
 
 A native macOS app that shows what's using your disk as an interactive sunburst,. Built in Rust with [GPUI](https://www.gpui.rs/) and [gpui-kit](https://github.com/longbridge/gpui-kit).
 
-Pick a folder and Spacee scans it, then draws each subfolder as a ring segment sized by the disk space it takes. Hover a segment to see its name and size, click a folder to zoom in, and click the center to go back up.
+Pick a volume or a folder (or drop one onto the window) and Spacee scans it, then draws each subfolder as a ring segment sized by the disk space it takes. Hover a segment to see its name and size, click a folder to zoom in, and click the center to go back up.
 
 The roadmap and design live in [PLAN.md](PLAN.md).
 
@@ -30,6 +30,8 @@ target/release/Spacee.app/Contents/MacOS/spacee ~/Downloads
 ```
 
 Set `SPACEE_PERF=1` to log how long each sunburst paint takes.
+
+Settings (⌘,) has the Dark / Light / System appearance choice. It is saved in `~/Library/Application Support/com.rlejnieks.spacee/settings.json`.
 
 ## Install
 

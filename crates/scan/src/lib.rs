@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io;
+use std::os::macos::fs::MetadataExt as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use rayon::prelude::*;
 
@@ -68,16 +70,53 @@ impl Tree {
     }
 }
 
+/// Live counters for a running scan, shared with the thread that started it.
+#[derive(Default)]
+pub struct Progress {
+    files: AtomicU64,
+    bytes: AtomicU64,
+    current: Mutex<PathBuf>,
+    cancelled: AtomicBool,
+}
+
+impl Progress {
+    pub fn files(&self) -> u64 {
+        self.files.load(Ordering::Relaxed)
+    }
+
+    pub fn bytes(&self) -> u64 {
+        self.bytes.load(Ordering::Relaxed)
+    }
+
+    /// A directory the walk recently entered.
+    pub fn current(&self) -> PathBuf {
+        self.current.lock().unwrap().clone()
+    }
+
+    /// Makes the running [`scan`] stop and return [`io::ErrorKind::Interrupted`].
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+}
+
 /// Scans `root` without following symlinks or crossing onto other devices.
 /// Unreadable entries are recorded in [`Tree::errors`] and the scan continues.
-pub fn scan(root: &Path) -> io::Result<Tree> {
+pub fn scan(root: &Path, progress: &Progress) -> io::Result<Tree> {
     let meta = fs::symlink_metadata(root)?;
     let walker = Walker {
         dev: meta.dev(),
         hard_links: Mutex::new(HashSet::new()),
         errors: Mutex::new(vec![]),
+        progress,
     };
     let built = walker.entry(root.as_os_str().to_string_lossy().into(), root, &meta);
+    if progress.is_cancelled() {
+        return Err(io::ErrorKind::Interrupted.into());
+    }
     let mut nodes = Vec::new();
     flatten(built, None, &mut nodes);
     Ok(Tree {
@@ -87,10 +126,16 @@ pub fn scan(root: &Path) -> io::Result<Tree> {
     })
 }
 
-struct Walker {
+/// Marks a file or directory whose contents live only in the cloud (iCloud Drive and
+/// other File Provider folders). Listing such a directory makes macOS fetch it from the
+/// network, which blocks for seconds, so the walk doesn't descend into it.
+const SF_DATALESS: u32 = 0x4000_0000;
+
+struct Walker<'a> {
     dev: u64,
     hard_links: Mutex<HashSet<(u64, u64)>>,
     errors: Mutex<Vec<ScanError>>,
+    progress: &'a Progress,
 }
 
 /// A subtree built by one worker, flattened into the arena once the walk finishes.
@@ -102,10 +147,11 @@ struct Built {
     children: Vec<Built>,
 }
 
-impl Walker {
+impl Walker<'_> {
     fn entry(&self, name: Box<str>, path: &Path, meta: &fs::Metadata) -> Built {
         let ft = meta.file_type();
         let own = self.allocated(meta);
+        self.progress.bytes.fetch_add(own, Ordering::Relaxed);
         if ft.is_symlink() {
             return Built {
                 name,
@@ -116,6 +162,7 @@ impl Walker {
             };
         }
         if !ft.is_dir() {
+            self.progress.files.fetch_add(1, Ordering::Relaxed);
             return Built {
                 name,
                 kind: Kind::File,
@@ -124,7 +171,7 @@ impl Walker {
                 children: vec![],
             };
         }
-        let children = if meta.dev() == self.dev {
+        let children = if meta.dev() == self.dev && meta.st_flags() & SF_DATALESS == 0 {
             self.children(path)
         } else {
             vec![]
@@ -139,6 +186,12 @@ impl Walker {
     }
 
     fn children(&self, dir: &Path) -> Vec<Built> {
+        if self.progress.is_cancelled() {
+            return vec![];
+        }
+        if let Ok(mut current) = self.progress.current.try_lock() {
+            dir.clone_into(&mut current);
+        }
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) => {
@@ -152,6 +205,9 @@ impl Walker {
         entries
             .into_par_iter()
             .filter_map(|entry| {
+                if self.progress.is_cancelled() {
+                    return None;
+                }
                 let path = entry.path();
                 match entry.metadata() {
                     Ok(meta) => {
@@ -238,7 +294,7 @@ mod tests {
         write(&root.join("a"), 10_000);
         write(&root.join("sub/b"), 100_000);
 
-        let tree = scan(root).unwrap();
+        let tree = scan(root, &Progress::default()).unwrap();
         let expected = blocks(root)
             + blocks(&root.join("a"))
             + blocks(&root.join("sub"))
@@ -256,7 +312,7 @@ mod tests {
         write(&dir.path().join("big"), 500_000);
         write(&dir.path().join("mid"), 50_000);
 
-        let tree = scan(dir.path()).unwrap();
+        let tree = scan(dir.path(), &Progress::default()).unwrap();
         let names: Vec<_> = tree
             .node(tree.root())
             .children
@@ -272,7 +328,7 @@ mod tests {
         write(&dir.path().join("orig"), 200_000);
         fs::hard_link(dir.path().join("orig"), dir.path().join("link")).unwrap();
 
-        let tree = scan(dir.path()).unwrap();
+        let tree = scan(dir.path(), &Progress::default()).unwrap();
         let both = child(&tree, tree.root(), "orig").size + child(&tree, tree.root(), "link").size;
         assert_eq!(both, blocks(&dir.path().join("orig")));
     }
@@ -284,7 +340,7 @@ mod tests {
         write(&target.path().join("payload"), 300_000);
         symlink(target.path(), dir.path().join("link")).unwrap();
 
-        let tree = scan(dir.path()).unwrap();
+        let tree = scan(dir.path(), &Progress::default()).unwrap();
         let link = child(&tree, tree.root(), "link");
         assert_eq!(
             (link.kind, link.size, link.children.len()),
@@ -302,7 +358,7 @@ mod tests {
         write(&dir.path().join("visible"), 10_000);
         fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o000)).unwrap();
 
-        let tree = scan(dir.path());
+        let tree = scan(dir.path(), &Progress::default());
         fs::set_permissions(&locked, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let tree = tree.unwrap();
 
@@ -312,12 +368,37 @@ mod tests {
     }
 
     #[test]
+    fn progress_ends_at_the_tree_totals() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join("sub")).unwrap();
+        write(&dir.path().join("a"), 10_000);
+        write(&dir.path().join("sub/b"), 100_000);
+
+        let progress = Progress::default();
+        let tree = scan(dir.path(), &progress).unwrap();
+        let root = tree.node(tree.root());
+        assert_eq!((progress.files(), progress.bytes()), (2, root.size));
+    }
+
+    #[test]
+    fn cancelled_scan_stops_walking_and_reports_interrupted() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("a"), 10_000);
+
+        let progress = Progress::default();
+        progress.cancel();
+        let err = scan(dir.path(), &progress).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert_eq!(progress.files(), 0);
+    }
+
+    #[test]
     fn path_rebuilds_full_path_from_root() {
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir(dir.path().join("sub")).unwrap();
         write(&dir.path().join("sub/f"), 1);
 
-        let tree = scan(dir.path()).unwrap();
+        let tree = scan(dir.path(), &Progress::default()).unwrap();
         let sub = tree.node(tree.root()).children[0];
         let f = tree.node(sub).children[0];
         assert_eq!(tree.path(f), dir.path().join("sub/f"));

@@ -308,7 +308,7 @@ mod tests {
         for (name, len) in files {
             write(&dir.path().join(name), *len);
         }
-        let tree = scan::scan(dir.path()).unwrap();
+        let tree = scan::scan(dir.path(), &scan::Progress::default()).unwrap();
         (dir, tree)
     }
 

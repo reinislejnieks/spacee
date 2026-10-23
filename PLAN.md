@@ -64,7 +64,9 @@ How the walk works:
 - **Firmlinks.** On macOS, `/` and `/System/Volumes/Data` are stitched together with firmlinks. Scanning `/` naively counts user data twice or misses it. When the target is the boot volume, scan the Data volume and the System volume as separate roots, or skip the paths listed in `/usr/share/firmlinks`. This needs a test against the real machine.
 - **Don't follow symlinks.** Record them as zero-size leaves.
 - **Permission errors** go into `errors` and are not fatal. The UI shows a count ("1,204 items couldn't be read") and offers to grant Full Disk Access.
-- **Progress.** The walker sends `ScanEvent::Progress { files, bytes, current_path }` on a channel, plus `ScanEvent::Partial(TreeSnapshot)` at most every ~250 ms. The final event is `ScanEvent::Done(Tree)`. Cancellation uses an `Arc<AtomicBool>`.
+- **Don't descend into cloud-only folders.** iCloud Drive and other File Provider folders can be "dataless" (`SF_DATALESS` in `st_flags`): their contents live only in the cloud. Listing one makes macOS fetch it over the network, which blocked for 3–10 s per folder in `~/Library/Mobile Documents`. They take no local space, so the walk records them without listing them.
+- **Progress.** The walker updates a shared `Progress` (atomic file and byte counters, the most recent directory, a cancel flag) that the UI reads every 100 ms. The walk checks the flag before each directory and each entry, and a cancelled scan returns `ErrorKind::Interrupted`. Measured on `~` (2.3M files): cancel stops in 2–25 ms.
+- **Growing sunburst (deferred).** The walk builds subtrees bottom-up, so there is no partial tree to draw until it finishes. Showing the sunburst as it grows needs a walker that publishes partial snapshots; it moves to milestone 7.
 
 ### 2.2 `sunburst`: pure geometry
 
@@ -129,10 +131,10 @@ Each milestone ends in something you can run and check.
 | 1 | `scan` crate + a CLI (`cargo run -p scan -- ~/Downloads`) that prints the top 20 entries | Totals within ~1% of `du -sk`; hard-link and symlink tests pass on a temp-dir fixture |
 | 2 | Static sunburst of a finished scan; hover tooltip | Visual check; `sunburst` unit tests; frame time measured with ~3k arcs |
 | 3 | Zoom in/out with animation, breadcrumb, side list kept in sync | Click through `~/Library` and back without flicker or wrong arcs |
-| 4 | Streaming scan with progress UI and cancel; volumes screen; settings view with Dark / Light / System | Scanning `/` shows a growing sunburst; cancel stops within ~100 ms; appearance choice survives a relaunch, and System flips live when macOS changes |
+| 4 | Streaming scan with progress UI and cancel; volumes screen; settings view with Dark / Light / System | Scanning shows live file and byte counts (the growing sunburst moved to milestone 7); cancel stops within ~100 ms; appearance choice survives a relaunch, and System flips live when macOS changes |
 | 5 | Collector + Trash + in-place size update; reveal / Quick Look | Trash a test folder → it appears in Finder's Trash and parent sizes drop by exactly its size |
 | 6 | Boot-volume correctness: firmlinks, hidden space, FDA flow | Scanned total + hidden ≈ `df` used for `/` |
-| 7 | Polish: colors, typography, empty and error states, app icon, `.dmg` | Screenshots reviewed in dark and light |
+| 7 | Polish: colors, typography, empty and error states, sunburst that grows during the scan, app icon, `.dmg` | Screenshots reviewed in dark and light |
 | 8 (opt.) | `getattrlistbulk` walker | Benchmark vs. `jwalk` on a full home-dir scan, run cold and warm |
 
 ---
