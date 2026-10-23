@@ -15,8 +15,8 @@ Stack: Rust (1.97), [GPUI](https://docs.rs/gpui) for rendering, [gpui-kit](https
    - Clicking a directory zooms into it with an animation. Clicking the center or the breadcrumb goes back up.
    - Items too small to draw are merged into one grey "smaller objects" arc per directory.
 4. **Side list.** The current folder's children sorted by size, each with a size bar. It stays in sync with the sunburst on hover and click.
-5. **Collector.** Drag an arc or a list row into a bottom tray. "Delete" moves everything in the tray to the Trash after a confirmation dialog. Tree sizes then update in place, with no rescan.
-6. **Actions.** Reveal in Finder, Quick Look (space bar), copy path.
+5. **Collector.** Drag an arc or a list row into a bottom tray, or right-click it and choose Add to Collector. Collecting a folder drops anything already collected inside it. "Move to Trash" moves everything in the tray to the Trash after a confirmation dialog. Tree sizes then update in place, with no rescan. Items that fail to move stay in the tray with the error beside them.
+6. **Actions.** Right-click menu with Reveal in Finder, Quick Look and Copy Path. Space bar opens Quick Look on the hovered item, or on the current folder when nothing is hovered.
 7. **Hidden space.** Shows the gap between what the volume reports as used (`statfs`) and what we could scan: purgeable space, APFS snapshots, and files we had no permission to read. Users care about it.
 8. **Settings view.** Opened from the sidebar and with ⌘,. Appearance is Dark, Light or System, and System follows macOS live. The choice is saved in `~/Library/Application Support/com.rlejnieks.spacee/settings.json` and applied before the first frame, so the window never flashes the wrong theme.
 
@@ -113,7 +113,7 @@ platform.rs    trash, reveal, quicklook, FDA check (macOS-only FFI)
 | Need | How |
 |---|---|
 | Move to Trash | `NSFileManager.trashItemAtURL` via `objc2-foundation` (recoverable; never `remove_dir_all`) |
-| Reveal in Finder | `NSWorkspace.activateFileViewerSelectingURLs` (or `open -R` as a fallback) |
+| Reveal in Finder | `open -R <path>` (`NSWorkspace.activateFileViewerSelectingURLs` if it ever needs more than one item) |
 | Quick Look | `qlmanage -p <path>` to start; a real `QLPreviewPanel` later |
 | Volumes | `getmntinfo` / `statfs` (or the `sysinfo` crate's `Disks`) |
 | Full Disk Access | Can't be requested from code. Detect it by trying to read a TCC-protected path (e.g. `~/Library/Safari`), then open `x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles` |

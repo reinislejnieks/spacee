@@ -4,24 +4,70 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
-use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
+use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::{Kind, NodeId, Tree};
 use sunburst::{DrawArc, Hit, Layout, Options, Target};
 
-use crate::chart;
+use crate::{chart, platform};
+
+actions!(browser, [QuickLook]);
 
 const ZOOM: Duration = Duration::from_millis(350);
 const ROW_HEIGHT: f32 = 44.0;
 
-/// The sunburst, breadcrumb and children list for one finished scan.
+/// The sunburst, breadcrumb, children list and collector for one finished scan.
 pub struct Browser {
-    tree: Rc<Tree>,
+    tree: Tree,
     layout: Rc<Layout>,
     zoom: Option<Zoom>,
     hovered: Option<Target>,
     chart_bounds: Option<Bounds<Pixels>>,
+    /// Items waiting to be moved to the Trash. None is inside another.
+    collector: Vec<NodeId>,
+    trash_error: Option<String>,
+    focus_handle: FocusHandle,
+}
+
+/// An item dragged from the chart or the list toward the collector.
+#[derive(Clone)]
+struct Dragged {
+    id: NodeId,
+    name: SharedString,
+    size: u64,
+}
+
+impl Dragged {
+    fn new(tree: &Tree, id: NodeId) -> Self {
+        Self {
+            id,
+            name: tree.node(id).name.to_string().into(),
+            size: tree.node(id).size,
+        }
+    }
+}
+
+impl Render for Dragged {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        h_flex()
+            .gap_2()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().popover)
+            .text_sm()
+            .child(self.name.clone())
+            .child(
+                div()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format_size(self.size)),
+            )
+    }
 }
 
 struct Zoom {
@@ -36,14 +82,17 @@ enum Pick {
 }
 
 impl Browser {
-    pub fn new(tree: Tree) -> Self {
+    pub fn new(tree: Tree, cx: &mut Context<Self>) -> Self {
         let layout = Layout::new(&tree, tree.root(), Options::default());
         Self {
-            tree: Rc::new(tree),
+            tree,
             layout: Rc::new(layout),
             zoom: None,
             hovered: None,
             chart_bounds: None,
+            collector: vec![],
+            trash_error: None,
+            focus_handle: cx.focus_handle(),
         }
     }
 
@@ -63,6 +112,133 @@ impl Browser {
         });
         self.hovered = None;
         cx.notify();
+    }
+
+    /// What the context menu and Quick Look act on: the hovered item, else the focused folder.
+    fn subject(&self) -> Option<NodeId> {
+        match self.hovered.unwrap_or(Target::Node(self.layout.focus)) {
+            Target::Node(id) => Some(id),
+            Target::Smaller { .. } => None,
+        }
+    }
+
+    fn collect(&mut self, id: NodeId, cx: &mut Context<Self>) {
+        let tree = &self.tree;
+        if id == tree.root() || self.collector.iter().any(|&c| is_within(tree, id, c)) {
+            return;
+        }
+        self.collector.retain(|&c| !is_within(tree, c, id));
+        self.collector.push(id);
+        self.trash_error = None;
+        cx.notify();
+    }
+
+    fn uncollect(&mut self, id: NodeId, cx: &mut Context<Self>) {
+        self.collector.retain(|&c| c != id);
+        self.trash_error = None;
+        cx.notify();
+    }
+
+    fn confirm_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let message = match &self.collector[..] {
+            [id] => format!("Move “{}” to the Trash?", self.tree.node(*id).name),
+            items => format!("Move {} items to the Trash?", items.len()),
+        };
+        let size = self.collector.iter().map(|&c| self.tree.node(c).size).sum();
+        let detail = format!("They take {} on disk.", format_size(size));
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &["Move to Trash", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(0) {
+                this.update(cx, |this, cx| this.trash_collected(cx)).ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Trashes the collected items and takes them out of the tree. Items that fail stay
+    /// collected, and the first error is shown.
+    fn trash_collected(&mut self, cx: &mut Context<Self>) {
+        let mut focus = self.layout.focus;
+        let mut failed = vec![];
+        let mut errors = vec![];
+        for id in std::mem::take(&mut self.collector) {
+            match platform::trash(&self.tree.path(id)) {
+                Ok(()) => {
+                    if is_within(&self.tree, focus, id) {
+                        focus = self.tree.node(id).parent.unwrap();
+                    }
+                    self.tree.remove(id);
+                }
+                Err(e) => {
+                    errors.push(format!("{}: {e}", self.tree.node(id).name));
+                    failed.push(id);
+                }
+            }
+        }
+        self.collector = failed;
+        self.trash_error = match &errors[..] {
+            [] => None,
+            [e] => Some(format!("Couldn't move to the Trash. {e}")),
+            [e, ..] => Some(format!(
+                "Couldn't move {} items to the Trash. {e}",
+                errors.len()
+            )),
+        };
+        self.layout = Rc::new(Layout::new(&self.tree, focus, Options::default()));
+        self.zoom = None;
+        self.hovered = None;
+        cx.notify();
+    }
+
+    fn quick_look(&mut self, _: &QuickLook, _: &mut Window, _: &mut Context<Self>) {
+        if let Some(id) = self.subject() {
+            platform::quick_look(&self.tree.path(id));
+        }
+    }
+
+    fn context_menu(&self, menu: PopupMenu, this: Entity<Self>) -> PopupMenu {
+        let Some(id) = self.subject() else {
+            return menu.label("Smaller objects");
+        };
+        let path = self.tree.path(id);
+        menu.item(
+            PopupMenuItem::new("Reveal in Finder")
+                .icon(IconName::FolderOpen)
+                .on_click({
+                    let path = path.clone();
+                    move |_, _, _| platform::reveal(&path)
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Quick Look")
+                .icon(IconName::Eye)
+                .on_click({
+                    let path = path.clone();
+                    move |_, _, _| platform::quick_look(&path)
+                }),
+        )
+        .item(
+            PopupMenuItem::new("Copy Path")
+                .icon(IconName::Copy)
+                .on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(
+                        path.to_string_lossy().into_owned(),
+                    ))
+                }),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new("Add to Collector")
+                .icon(IconName::Delete)
+                .disabled(id == self.tree.root())
+                .on_click(move |_, _, cx| this.update(cx, |this, cx| this.collect(id, cx))),
+        )
     }
 
     fn pick(&self, position: Point<Pixels>) -> Option<Pick> {
@@ -96,6 +272,9 @@ impl Browser {
     }
 
     fn mouse_up(&mut self, e: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if cx.has_active_drag() {
+            return;
+        }
         match self.pick(e.position) {
             Some(Pick::Center) => {
                 if let Some(parent) = self.tree.node(self.layout.focus).parent {
@@ -140,16 +319,18 @@ impl Browser {
 
     fn render_chart(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let arcs = self.frame(window);
-        let tree = self.tree.clone();
-        let layout = self.layout.clone();
         let hovered = self.hovered_arc();
         let dark = cx.theme().is_dark();
         let this = cx.entity();
         let (title, size) = describe(
-            &tree,
-            &layout,
-            self.hovered.unwrap_or(Target::Node(layout.focus)),
+            &self.tree,
+            &self.layout,
+            self.hovered.unwrap_or(Target::Node(self.layout.focus)),
         );
+        let dragged = match self.hovered {
+            Some(Target::Node(id)) => Some(Dragged::new(&self.tree, id)),
+            _ => None,
+        };
 
         div()
             .id("chart")
@@ -158,13 +339,21 @@ impl Browser {
             .h_full()
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+            .when_some(dragged, |chart, dragged| {
+                chart.on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
+            })
             .child(
                 canvas(
-                    move |bounds, _, cx| {
-                        this.update(cx, |this, _| this.chart_bounds = Some(bounds))
+                    {
+                        let this = this.clone();
+                        move |bounds, _, cx| {
+                            this.update(cx, |this, _| this.chart_bounds = Some(bounds))
+                        }
                     },
-                    move |bounds, _, window, _| {
-                        chart::paint(&tree, &layout, &arcs, hovered, dark, bounds, window)
+                    move |bounds, _, window, cx| {
+                        let this = this.read(cx);
+                        let (tree, layout) = (&this.tree, &this.layout);
+                        chart::paint(tree, layout, &arcs, hovered, dark, bounds, window)
                     },
                 )
                 .size_full(),
@@ -262,6 +451,9 @@ impl Browser {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| this.focus(id, cx)))
+                    .on_drag(Dragged::new(&self.tree, id), |d, _, _, cx| {
+                        cx.new(|_| d.clone())
+                    })
                     .child(
                         h_flex()
                             .gap_2()
@@ -292,17 +484,115 @@ impl Browser {
             })
             .collect()
     }
+
+    fn render_collector(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let chips = self.collector.iter().enumerate().map(|(i, &id)| {
+            let node = self.tree.node(id);
+            h_flex()
+                .flex_none()
+                .gap_1()
+                .pl_2()
+                .rounded_md()
+                .bg(cx.theme().secondary)
+                .text_sm()
+                .child(
+                    div()
+                        .max_w(px(160.))
+                        .truncate()
+                        .child(node.name.to_string()),
+                )
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format_size(node.size)),
+                )
+                .child(
+                    Button::new(("uncollect", i))
+                        .ghost()
+                        .xsmall()
+                        .icon(IconName::Close)
+                        .on_click(cx.listener(move |this, _, _, cx| this.uncollect(id, cx))),
+                )
+        });
+        let total = self.collector.iter().map(|&c| self.tree.node(c).size).sum();
+        let hint = div()
+            .flex_1()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("Drag items here, or right-click them, to collect them for the Trash");
+
+        h_flex()
+            .id("collector")
+            .flex_none()
+            .h(px(52.))
+            .px_4()
+            .gap_3()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .drag_over::<Dragged>(|style, _, _, cx| style.bg(cx.theme().accent))
+            .on_drop(cx.listener(|this, d: &Dragged, _, cx| this.collect(d.id, cx)))
+            .when(
+                self.collector.is_empty() && self.trash_error.is_none(),
+                |tray| tray.child(hint),
+            )
+            .when(!self.collector.is_empty(), |tray| {
+                tray.child(
+                    h_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_2()
+                        .overflow_x_hidden()
+                        .children(chips),
+                )
+            })
+            .when_some(self.trash_error.clone(), |tray, error| {
+                tray.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(error),
+                )
+            })
+            .when(!self.collector.is_empty(), |tray| {
+                tray.child(div().flex_none().text_sm().child(format_size(total)))
+                    .child(
+                        Button::new("trash")
+                            .danger()
+                            .small()
+                            .icon(IconName::Delete)
+                            .label("Move to Trash")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.confirm_trash(window, cx)),
+                            ),
+                    )
+            })
+    }
 }
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.tree.node(self.layout.focus).children.len();
+        let this = cx.entity();
         v_flex()
             .size_full()
+            .key_context("Browser")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::quick_look))
+            // Hovering is enough to aim the space bar, so take focus without a click.
+            .on_mouse_move(cx.listener(|this, _, window, cx| {
+                if !this.focus_handle.is_focused(window) {
+                    window.focus(&this.focus_handle, cx);
+                }
+            }))
             .child(self.render_breadcrumb(cx))
             .child(
                 h_flex()
+                    .id("content")
                     .flex_1()
+                    .min_h_0()
                     .w_full()
                     .items_start()
                     .child(self.render_chart(window, cx))
@@ -318,9 +608,25 @@ impl Render for Browser {
                                 uniform_list("children", count, cx.processor(Self::render_rows))
                                     .size_full(),
                             ),
-                    ),
+                    )
+                    .context_menu(move |menu, _, cx| {
+                        this.read(cx).context_menu(menu, this.clone())
+                    }),
             )
+            .child(self.render_collector(cx))
     }
+}
+
+/// Whether `id` is `ancestor` or lies inside it.
+fn is_within(tree: &Tree, id: NodeId, ancestor: NodeId) -> bool {
+    let mut cur = Some(id);
+    while let Some(id) = cur {
+        if id == ancestor {
+            return true;
+        }
+        cur = tree.node(id).parent;
+    }
+    false
 }
 
 fn display_name(tree: &Tree, id: NodeId) -> String {

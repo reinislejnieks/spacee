@@ -4,6 +4,8 @@ A native macOS app that shows what's using your disk as an interactive sunburst,
 
 Pick a volume or a folder (or drop one onto the window) and Spacee scans it, then draws each subfolder as a ring segment sized by the disk space it takes. Hover a segment to see its name and size, click a folder to zoom in, and click the center to go back up.
 
+To free space, drag segments or list rows into the collector tray at the bottom, or right-click them and choose Add to Collector, then press Move to Trash. Spacee only ever moves items to the Trash, never deletes them, and updates the sizes in place without a rescan. The right-click menu also has Reveal in Finder, Quick Look and Copy Path, and the space bar opens Quick Look on the hovered item.
+
 The roadmap and design live in [PLAN.md](PLAN.md).
 
 ## Requirements

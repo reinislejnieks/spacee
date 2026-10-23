@@ -1,5 +1,6 @@
 mod browser;
 mod chart;
+mod platform;
 mod settings;
 mod volumes;
 
@@ -117,7 +118,7 @@ impl Spacee {
                 let result = scan.await;
                 this.update(cx, |this, cx| {
                     this.scan = Some(match result {
-                        Ok(tree) => Scan::Done(cx.new(|_| Browser::new(tree))),
+                        Ok(tree) => Scan::Done(cx.new(|cx| Browser::new(tree, cx))),
                         Err(e) => Scan::Failed(format!("{}: {e}", path.display())),
                     });
                     cx.notify();
@@ -405,6 +406,7 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("space", browser::QuickLook, Some("Browser")),
             ]);
             cx.set_menus(vec![Menu {
                 name: "Spacee".into(),

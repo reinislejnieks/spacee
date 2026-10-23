@@ -68,6 +68,28 @@ impl Tree {
         }
         names.iter().rev().collect()
     }
+
+    /// Detaches `id` from its parent and subtracts its size and file count from every
+    /// ancestor, keeping each ancestor's children sorted. The root can't be removed.
+    pub fn remove(&mut self, id: NodeId) {
+        let Some(parent) = self.node(id).parent else {
+            return;
+        };
+        let (size, files) = (self.node(id).size, self.node(id).file_count);
+        self.nodes[parent.0 as usize].children.retain(|&c| c != id);
+        let mut cur = Some(parent);
+        while let Some(id) = cur {
+            let node = &mut self.nodes[id.0 as usize];
+            node.size -= size;
+            node.file_count -= files;
+            cur = node.parent;
+            if let Some(parent) = cur {
+                let mut children = std::mem::take(&mut self.nodes[parent.0 as usize].children);
+                children.sort_by_key(|&c| std::cmp::Reverse(self.node(c).size));
+                self.nodes[parent.0 as usize].children = children;
+            }
+        }
+    }
 }
 
 /// Live counters for a running scan, shared with the thread that started it.
@@ -390,6 +412,64 @@ mod tests {
         let err = scan(dir.path(), &progress).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Interrupted);
         assert_eq!(progress.files(), 0);
+    }
+
+    #[test]
+    fn remove_subtracts_from_ancestors_and_resorts_siblings() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("a/inner")).unwrap();
+        fs::create_dir(root.join("b")).unwrap();
+        write(&root.join("a/inner/big"), 500_000);
+        write(&root.join("a/small"), 5_000);
+        write(&root.join("b/mid"), 50_000);
+
+        let mut tree = scan(root, &Progress::default()).unwrap();
+        let top = tree.root();
+        let (a, b) = (tree.node(top).children[0], tree.node(top).children[1]);
+        assert_eq!((&*tree.node(a).name, &*tree.node(b).name), ("a", "b"));
+        let inner = tree.node(a).children[0];
+        let big = tree.node(inner).children[0];
+        let before = (
+            tree.node(top).size,
+            tree.node(a).size,
+            tree.node(inner).size,
+        );
+        let removed = tree.node(big).size;
+
+        tree.remove(big);
+
+        assert_eq!(
+            (
+                tree.node(top).size,
+                tree.node(a).size,
+                tree.node(inner).size
+            ),
+            (before.0 - removed, before.1 - removed, before.2 - removed)
+        );
+        assert_eq!((tree.node(top).file_count, tree.node(a).file_count), (2, 1));
+        assert!(tree.node(inner).children.is_empty());
+        assert_eq!(tree.node(top).children, [b, a]);
+        assert_eq!(tree.node(a).children, [child_id(&tree, a, "small"), inner]);
+    }
+
+    #[test]
+    fn removing_the_root_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("f"), 10_000);
+        let mut tree = scan(dir.path(), &Progress::default()).unwrap();
+        let size = tree.node(tree.root()).size;
+        tree.remove(tree.root());
+        assert_eq!(tree.node(tree.root()).size, size);
+    }
+
+    fn child_id(tree: &Tree, parent: NodeId, name: &str) -> NodeId {
+        *tree
+            .node(parent)
+            .children
+            .iter()
+            .find(|&&c| &*tree.node(c).name == name)
+            .unwrap()
     }
 
     #[test]
