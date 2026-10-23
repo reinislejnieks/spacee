@@ -1,0 +1,7 @@
+[package]
+name = "spacee"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+gpui-kit.workspace = true
