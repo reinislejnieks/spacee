@@ -2,6 +2,7 @@ mod browser;
 mod chart;
 mod platform;
 mod settings;
+mod style;
 mod volumes;
 
 use std::path::{Path, PathBuf};
@@ -28,6 +29,8 @@ use crate::volumes::Volume;
 actions!(spacee, [OpenSettings, Quit]);
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
+/// Rows in the chart that grows while a scan runs.
+const LIVE_LEVELS: usize = 4;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
@@ -56,6 +59,8 @@ struct Spacee {
     volumes: Vec<Volume>,
     full_disk_access: bool,
     settings: Settings,
+    /// Where the running scan's chart was drawn last frame, for placing its labels.
+    live_bounds: Option<Bounds<Pixels>>,
     _appearance: Subscription,
 }
 
@@ -71,6 +76,7 @@ impl Spacee {
             volumes: volumes::list(),
             full_disk_access: platform::has_full_disk_access(),
             settings,
+            live_bounds: None,
             _appearance,
         }
     }
@@ -531,7 +537,11 @@ impl Spacee {
     ) -> AnyElement {
         let start = Instant::now();
         let live = progress.snapshot().map(|tree| {
-            let layout = Layout::new(&tree, tree.root(), Options::default());
+            let options = Options {
+                max_depth: LIVE_LEVELS,
+                ..Options::default()
+            };
+            let layout = Layout::new(&tree, tree.root(), options);
             (tree, layout)
         });
         if std::env::var_os("SPACEE_PERF").is_some()
@@ -544,58 +554,55 @@ impl Spacee {
             );
         }
         let dark = cx.theme().is_dark();
+        let levels = LIVE_LEVELS;
+        let overlay = self.live_bounds.map(|bounds| {
+            let geometry = chart::Geometry::new(bounds, levels);
+            let mut labels = match &live {
+                Some((tree, layout)) => {
+                    let size = tree.node(tree.root()).size;
+                    chart::labels(tree, &layout.draw_arcs(), size, geometry, cx)
+                }
+                None => vec![],
+            };
+            labels.push(chart::root_label(
+                name.to_string(),
+                format!("{} files", format_count(progress.files())),
+                format_size(progress.bytes()),
+                geometry,
+                cx,
+            ));
+            labels
+        });
+        let this = cx.entity();
         v_flex()
             .size_full()
             .child(
                 div()
                     .relative()
                     .flex_1()
-                    .w_full()
+                    .min_h_0()
+                    .m_3()
                     .child(
                         canvas(
-                            |_, _, _| {},
+                            move |bounds, _, cx| {
+                                this.update(cx, |this, cx| {
+                                    if this.live_bounds != Some(bounds) {
+                                        this.live_bounds = Some(bounds);
+                                        cx.notify();
+                                    }
+                                })
+                            },
                             move |bounds, _, window, _| {
+                                let geometry = chart::Geometry::new(bounds, levels);
                                 if let Some((tree, layout)) = &live {
                                     let arcs = layout.draw_arcs();
-                                    chart::paint(tree, layout, &arcs, None, dark, bounds, window);
+                                    chart::paint(tree, &arcs, None, dark, geometry, window);
                                 }
                             },
                         )
                         .size_full(),
                     )
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .inset_0()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                v_flex()
-                                    .items_center()
-                                    .max_w(px(180.))
-                                    .child(
-                                        div()
-                                            .text_sm()
-                                            .truncate()
-                                            .child(format!("Scanning {name}")),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xl()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .child(format_size(progress.bytes())),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(format!(
-                                                "{} files",
-                                                format_count(progress.files())
-                                            )),
-                                    ),
-                            ),
-                    ),
+                    .children(overlay.into_iter().flatten()),
             )
             .child(
                 h_flex()

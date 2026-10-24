@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::f32::consts::TAU;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -11,9 +10,10 @@ use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_f
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::{FileType, Kind, NodeId, Tree};
-use sunburst::{DrawArc, Hit, Layout, Options, Target};
+use sunburst::{DrawArc, Layout, Options, Target};
 
-use crate::{chart, platform};
+use crate::chart::{self, Spot};
+use crate::platform;
 
 actions!(browser, [QuickLook]);
 
@@ -81,7 +81,8 @@ struct Zoom {
 
 /// What the pointer is over in the chart.
 enum Pick {
-    Center,
+    /// The bar for the focused folder, which leads back up to its parent.
+    Root,
     Arc(Target),
 }
 
@@ -113,22 +114,6 @@ impl Browser {
         }
     }
 
-    fn describe(&self, target: Target) -> (String, String) {
-        let (tree, layout) = (&self.tree, &self.layout);
-        match target {
-            Target::Node(id) => (self.display_name(id), format_size(tree.node(id).size)),
-            Target::Smaller { .. } => {
-                let sweep = layout
-                    .arcs()
-                    .find(|a| a.target == target)
-                    .map_or(0.0, |a| a.sweep);
-                let focus = tree.node(layout.focus).size;
-                let bytes = (sweep / TAU) as f64 * focus as f64;
-                ("Smaller objects".into(), format_size(bytes as u64))
-            }
-        }
-    }
-
     fn focus(&mut self, id: NodeId, cx: &mut Context<Self>) {
         if id == self.layout.focus || self.tree.node(id).kind != Kind::Dir {
             return;
@@ -141,6 +126,12 @@ impl Browser {
         });
         self.hovered = None;
         cx.notify();
+    }
+
+    fn focus_parent(&mut self, cx: &mut Context<Self>) {
+        if let Some(parent) = self.tree.node(self.layout.focus).parent {
+            self.focus(parent, cx);
+        }
     }
 
     /// The item on disk that the context menu and Quick Look act on: the hovered item,
@@ -280,18 +271,20 @@ impl Browser {
         )
     }
 
+    fn geometry(&self) -> Option<chart::Geometry> {
+        let bounds = self.chart_bounds?;
+        Some(chart::Geometry::new(bounds, self.layout.options.max_depth))
+    }
+
     fn pick(&self, position: Point<Pixels>) -> Option<Pick> {
         if self.zoom.is_some() {
             return None;
         }
-        let (center, radius) = chart::geometry(self.chart_bounds?);
-        let offset = position - center;
-        match self
-            .layout
-            .hit(offset.x.as_f32(), offset.y.as_f32(), radius)?
-        {
-            Hit::Center => Some(Pick::Center),
-            Hit::Arc(arc) => Some(Pick::Arc(arc.target)),
+        match self.geometry()?.spot(position)? {
+            Spot::Root => Some(Pick::Root),
+            Spot::Cell { depth, angle } => {
+                Some(Pick::Arc(self.layout.arc_at(depth, angle)?.target))
+            }
         }
     }
 
@@ -315,11 +308,7 @@ impl Browser {
             return;
         }
         match self.pick(e.position) {
-            Some(Pick::Center) => {
-                if let Some(parent) = self.tree.node(self.layout.focus).parent {
-                    self.focus(parent, cx);
-                }
-            }
+            Some(Pick::Root) => self.focus_parent(cx),
             Some(Pick::Arc(Target::Node(id))) => self.focus(id, cx),
             _ => {}
         }
@@ -361,14 +350,23 @@ impl Browser {
         let hovered = self.hovered_arc();
         let dark = cx.theme().is_dark();
         let this = cx.entity();
-        let (title, size) = self.describe(self.hovered.unwrap_or(Target::Node(self.layout.focus)));
         let dragged = self
             .hovered
             .and(self.subject())
             .map(|id| Dragged::new(&self.tree, id));
-        // The centre label fits inside the hole, measured on the last frame.
-        let hole = self.chart_bounds.map_or(0.0, |bounds| {
-            2.0 * self.layout.radius_at(0.0, chart::geometry(bounds).1)
+        let focus = self.layout.focus;
+        // Labels are placed by the chart's size on the last frame.
+        let overlay = self.geometry().map(|geometry| {
+            let size = self.tree.node(focus).size;
+            let mut labels = chart::labels(&self.tree, &arcs, size, geometry, cx);
+            labels.push(chart::root_label(
+                self.display_name(focus),
+                self.root_detail(),
+                format_size(size),
+                geometry,
+                cx,
+            ));
+            labels
         });
         let types: HashSet<FileType> = arcs
             .iter()
@@ -410,52 +408,55 @@ impl Browser {
                             {
                                 let this = this.clone();
                                 move |bounds, _, cx| {
-                                    this.update(cx, |this, _| this.chart_bounds = Some(bounds))
+                                    this.update(cx, |this, cx| {
+                                        if this.chart_bounds != Some(bounds) {
+                                            this.chart_bounds = Some(bounds);
+                                            cx.notify();
+                                        }
+                                    })
                                 }
                             },
                             move |bounds, _, window, cx| {
                                 let this = this.read(cx);
-                                let (tree, layout) = (&this.tree, &this.layout);
-                                chart::paint(tree, layout, &arcs, hovered, dark, bounds, window)
+                                let geometry =
+                                    chart::Geometry::new(bounds, this.layout.options.max_depth);
+                                chart::paint(&this.tree, &arcs, hovered, dark, geometry, window)
                             },
                         )
                         .size_full(),
                     )
-                    .when(hole >= 60.0, |chart| {
-                        chart.child(
-                            v_flex()
-                                .absolute()
-                                .inset_0()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    v_flex()
-                                        .items_center()
-                                        .max_w(px((hole * 0.85).min(180.0)))
-                                        .child(div().text_sm().truncate().child(title))
-                                        .child(
-                                            div()
-                                                .when(hole >= 120.0, |s| s.text_xl())
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .child(size),
-                                        ),
-                                ),
-                        )
-                    }),
+                    .children(overlay.into_iter().flatten()),
             )
             .child(
                 h_flex()
                     .flex_none()
                     .flex_wrap()
-                    .justify_center()
                     .gap_x_4()
                     .gap_y_1()
-                    .px_4()
-                    .pb_3()
+                    .pt_3()
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .children(legend),
             )
+    }
+
+    /// Where the focused folder sits inside the scan, or, for the scan's top folder and
+    /// those right inside it, how many files it holds.
+    fn root_detail(&self) -> String {
+        let focus = self.layout.focus;
+        let mut names = vec![];
+        let mut node = self.tree.node(focus).parent;
+        while let Some(id) = node
+            && id != self.tree.root()
+        {
+            names.push(self.tree.node(id).name.to_string());
+            node = self.tree.node(id).parent;
+        }
+        if names.is_empty() {
+            return format_files(self.tree.node(focus).file_count);
+        }
+        names.reverse();
+        format!("/{}", names.join("/"))
     }
 
     /// Why the focused folder has nothing to show, if it doesn't.
@@ -499,30 +500,12 @@ impl Browser {
     ) -> Vec<Stateful<Div>> {
         let focus = self.tree.node(self.layout.focus);
         let dark = cx.theme().is_dark();
-        let ring = &self.layout.rings[0];
-        let smaller = Target::Smaller {
-            parent: self.layout.focus,
-        };
         range
             .map(|i| {
                 let id = focus.children[i];
                 let node = self.tree.node(id);
                 let target = Target::Node(id);
-                let arc = ring
-                    .iter()
-                    .find(|a| a.target == target)
-                    .or_else(|| ring.iter().find(|a| a.target == smaller))
-                    .map(|a| DrawArc {
-                        target: a.target,
-                        inner: 0.0,
-                        outer: 1.0,
-                        start: a.start,
-                        sweep: a.sweep,
-                        opacity: 1.0,
-                    });
-                let swatch = arc.map_or(cx.theme().muted, |a| {
-                    chart::color(&self.tree, &a, false, dark)
-                });
+                let swatch = chart::node_color(&self.tree, id, dark);
                 let fraction = node.size as f32 / focus.size.max(1) as f32;
                 let hovered = self.hovered == Some(target);
 
@@ -801,6 +784,16 @@ pub fn format_count(n: u64) -> String {
         out.push(c);
     }
     out
+}
+
+/// Rounded, such as "412K files", where the exact count doesn't matter.
+pub fn format_files(n: u32) -> String {
+    let count = match n {
+        0..10_000 => format_count(n.into()),
+        10_000..1_000_000 => format!("{:.0}K", n as f64 / 1e3),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    };
+    format!("{count} {}", if n == 1 { "file" } else { "files" })
 }
 
 /// Decimal units, as Finder reports sizes.

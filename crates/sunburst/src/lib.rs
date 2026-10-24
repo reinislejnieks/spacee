@@ -8,8 +8,6 @@ pub struct Options {
     pub max_depth: usize,
     /// Children narrower than this (radians) are merged into one "smaller objects" arc.
     pub min_sweep: f32,
-    /// Radius of the center disc as a fraction of the outer radius.
-    pub hole: f32,
 }
 
 impl Default for Options {
@@ -17,7 +15,6 @@ impl Default for Options {
         Self {
             max_depth: 5,
             min_sweep: 0.6_f32.to_radians(),
-            hole: 0.3,
         }
     }
 }
@@ -65,12 +62,6 @@ pub struct Layout {
     pub rings: Vec<Vec<Arc>>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Hit<'a> {
-    Center,
-    Arc(&'a Arc),
-}
-
 impl Layout {
     pub fn new(tree: &Tree, focus: NodeId, options: Options) -> Self {
         let mut rings = vec![vec![]; options.max_depth];
@@ -99,28 +90,12 @@ impl Layout {
             .collect()
     }
 
-    /// Radius in pixels of the ring-unit position `ring` for a sunburst of outer radius `radius`.
-    pub fn radius_at(&self, ring: f32, radius: f32) -> f32 {
-        let hole = radius * self.options.hole;
-        hole + (radius - hole) * ring / self.options.max_depth as f32
-    }
-
-    /// What lies under the point `(x, y)`, relative to the center with y pointing down.
-    pub fn hit(&self, x: f32, y: f32, radius: f32) -> Option<Hit<'_>> {
-        let r = x.hypot(y);
-        let hole = radius * self.options.hole;
-        if r < hole {
-            return Some(Hit::Center);
-        }
-        if r >= radius {
-            return None;
-        }
-        let depth = ((r - hole) / (radius - hole) * self.options.max_depth as f32) as usize;
+    /// The arc in ring `depth` that covers `angle`, in radians from the start of the ring.
+    pub fn arc_at(&self, depth: usize, angle: f32) -> Option<&Arc> {
         let ring = self.rings.get(depth)?;
-        let angle = x.atan2(-y).rem_euclid(TAU);
         let i = ring.partition_point(|a| a.start <= angle).checked_sub(1)?;
         let arc = &ring[i];
-        (angle < arc.end()).then_some(Hit::Arc(arc))
+        (angle < arc.end()).then_some(arc)
     }
 }
 
@@ -403,45 +378,21 @@ mod tests {
     }
 
     #[test]
-    fn hit_finds_the_arc_under_the_point() {
+    fn arc_at_finds_the_arc_covering_the_angle() {
         let (_dir, tree) = fixture(&[("a", 300_000), ("b", 100_000)]);
         let layout = Layout::new(&tree, tree.root(), Options::default());
-        let radius = 100.0;
-        let (inner, outer) = (layout.radius_at(0.0, radius), layout.radius_at(1.0, radius));
-        let mid = (inner + outer) / 2.0;
-
         for arc in &layout.rings[0] {
             let angle = arc.start + arc.sweep / 2.0;
-            let (x, y) = (mid * angle.sin(), -mid * angle.cos());
-            assert_eq!(
-                layout.hit(x, y, radius),
-                Some(Hit::Arc(arc)),
-                "{}",
-                named(&tree, arc)
-            );
+            assert_eq!(layout.arc_at(0, angle), Some(arc), "{}", named(&tree, arc));
         }
-        assert_eq!(layout.hit(0.0, 0.0, radius), Some(Hit::Center));
-        assert_eq!(layout.hit(radius, radius, radius), None);
-        let outer1 = layout.radius_at(2.0, radius);
         assert_eq!(
-            layout.hit(0.0, -(outer + outer1) / 2.0, radius),
-            None,
-            "files have no ring-1 children"
+            named(&tree, layout.arc_at(0, 0.0).unwrap()),
+            "a",
+            "largest first"
         );
-    }
-
-    #[test]
-    fn first_arc_starts_at_twelve_oclock_and_runs_clockwise() {
-        let (_dir, tree) = fixture(&[("a", 300_000), ("b", 100_000)]);
-        let layout = Layout::new(&tree, tree.root(), Options::default());
-        let (inner, outer) = (layout.radius_at(0.0, 100.0), layout.radius_at(1.0, 100.0));
-        let mid = (inner + outer) / 2.0;
-        let just_right_of_top = (mid * 0.01_f32.sin(), -mid * 0.01_f32.cos());
-        let Some(Hit::Arc(arc)) = layout.hit(just_right_of_top.0, just_right_of_top.1, 100.0)
-        else {
-            panic!("no arc at top");
-        };
-        assert_eq!(named(&tree, arc), "a");
+        assert_eq!(layout.arc_at(0, TAU), None);
+        assert_eq!(layout.arc_at(1, 0.1), None, "files have no ring-1 children");
+        assert_eq!(layout.arc_at(9, 0.1), None);
     }
 
     fn visible(mut arcs: Vec<DrawArc>) -> Vec<(Target, i32, i32, i32, i32)> {
