@@ -8,7 +8,7 @@ Stack: Rust (1.97), [GPUI](https://docs.rs/gpui) for rendering, [gpui-kit](https
 
 ## 1. What v1 does
 
-1. **Volumes screen.** Lists mounted volumes with used/free bars. Each one has a Scan button. You can also drop a folder onto the window to scan it.
+1. **Volumes screen.** The startup disk gets a large panel: free space as a big number, a bar and a status (Plenty of space, Filling up from 75% used, Almost full above 90%), and buttons to scan the disk or the home folder. Other volumes sit below in compact rows grouped as Drives, Disk images and Network, each with a bar, free space and a Scan button. A disk image is told apart by Disk Arbitration's device model "Disk Image"; network shares (SMB, NFS, AFP, WebDAV) are listed with their host and a note that scanning them is slow. You can also drop a folder onto the window to scan it.
 2. **Scan.** A fast parallel scan that streams progress (files counted, bytes counted, current path). The sunburst grows while the scan runs.
 3. **Sunburst view.** Rings around a center disc. Each ring is one directory level, and each arc's angle is proportional to its size. The center shows the current folder's name and size.
    - Hovering an arc highlights it and shows name, size and % in the center and in the side list.
@@ -20,7 +20,7 @@ Stack: Rust (1.97), [GPUI](https://docs.rs/gpui) for rendering, [gpui-kit](https
 7. **Unaccounted space.** When the scan root is a volume's mount point, the gap between what the volume reports as used (total minus available, as the volumes card shows it) and what the walk found becomes a grey "Unaccounted space" item under the root: other volumes in the APFS container (Preboot, Recovery, VM), snapshots, purgeable space, and folders the app couldn't read. It can't be revealed or collected. The scan view says how many items couldn't be read, and when the app lacks Full Disk Access, both that bar and the volumes screen offer a button that opens the Full Disk Access pane in System Settings. Purgeable space and snapshots aren't split out yet.
 8. **Settings view.** Opened from the sidebar and with ⌘,. Appearance is Dark, Light or System, and System follows macOS live. The choice is saved in `~/Library/Application Support/com.rlejnieks.spacee/settings.json` and applied before the first frame, so the window never flashes the wrong theme.
 
-Out of scope for v1: duplicate finder, scheduled scans, network volumes, the App Store (sandboxing makes a whole-disk scanner close to impossible there).
+Out of scope for v1: duplicate finder, scheduled scans, fast network scanning (shares are listed and scan through the normal walk), the App Store (sandboxing makes a whole-disk scanner close to impossible there).
 
 ---
 

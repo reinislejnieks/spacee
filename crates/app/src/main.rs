@@ -213,71 +213,60 @@ impl Spacee {
     }
 
     fn render_volumes(&self, cx: &mut Context<Self>) -> AnyElement {
-        let cards = self.volumes.iter().enumerate().map(|(i, volume)| {
-            let used = volume.total.saturating_sub(volume.available);
-            let fraction = used as f32 / volume.total.max(1) as f32;
-            let mount = volume.mount.clone();
-            h_flex()
-                .gap_4()
-                .p_4()
-                .rounded_lg()
-                .border_1()
-                .border_color(cx.theme().border)
-                .child(IconName::HardDrive)
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .gap_2()
-                        .child(
-                            h_flex()
-                                .justify_between()
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(volume.name.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .text_sm()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(format!(
-                                            "{} available of {}",
-                                            format_size(volume.available),
-                                            format_size(volume.total)
-                                        )),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .h(px(6.))
-                                .w_full()
-                                .rounded_full()
-                                .bg(cx.theme().muted)
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(fraction))
-                                        .rounded_full()
-                                        .bg(cx.theme().primary),
-                                ),
-                        ),
-                )
-                .child(Button::new(("scan", i)).label("Scan").on_click(
-                    cx.listener(move |this, _, _, cx| this.start_scan(mount.clone(), cx)),
-                ))
-        });
+        let startup = self
+            .volumes
+            .iter()
+            .position(|v| v.kind == volumes::Kind::Startup)
+            .map(|i| self.render_startup(i, cx));
+        let mut sections = vec![];
+        for group in volumes::Group::ALL {
+            let mut rows = vec![];
+            for (i, volume) in self.volumes.iter().enumerate() {
+                if volume.kind.group() == Some(group) {
+                    rows.push(self.render_volume_row(i, rows.is_empty(), cx));
+                }
+            }
+            if rows.is_empty() {
+                continue;
+            }
+            let muted = cx.theme().muted_foreground;
+            sections.push(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(group.title()),
+                            )
+                            .when_some(group.note(), |heading, note| {
+                                heading.child(div().min_w_0().truncate().child(note))
+                            }),
+                    )
+                    .child(
+                        v_flex()
+                            .rounded_lg()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .overflow_hidden()
+                            .children(rows),
+                    ),
+            );
+        }
 
         v_flex()
+            .id("volumes")
             .size_full()
+            .overflow_y_scroll()
             .p_6()
-            .gap_4()
-            .child(
-                div()
-                    .text_xl()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Volumes"),
-            )
-            .children(cards)
+            .gap_5()
+            .children(startup)
+            .children(sections)
             .when(!self.full_disk_access, |page| {
                 page.child(
                     h_flex()
@@ -314,6 +303,175 @@ impl Spacee {
                             .text_color(cx.theme().muted_foreground)
                             .child("or drop a folder onto the window"),
                     ),
+            )
+            .into_any_element()
+    }
+
+    /// The startup disk, given most of the screen since it's the one that fills up.
+    fn render_startup(&self, i: usize, cx: &mut Context<Self>) -> AnyElement {
+        let volume = &self.volumes[i];
+        let fraction = volume.used_fraction();
+        let status = volumes::Status::of(fraction);
+        let color = status_color(status, cx);
+        let mount = volume.mount.clone();
+        let muted = cx.theme().muted_foreground;
+        h_flex()
+            .flex_wrap()
+            .gap_6()
+            .p_6()
+            .rounded_xl()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().secondary)
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w(px(260.))
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(muted)
+                            .child("STARTUP DISK"),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_xl()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(volume.name.clone()),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .gap_1p5()
+                                    .px_2p5()
+                                    .py_0p5()
+                                    .rounded_full()
+                                    .bg(color.opacity(0.15))
+                                    .text_color(color)
+                                    .text_xs()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(div().size_2().rounded_full().bg(color))
+                                    .child(status.label()),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .items_end()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(40.))
+                                    .line_height(px(44.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(format_size(volume.available)),
+                            )
+                            .child(
+                                div()
+                                    .pb_1()
+                                    .text_lg()
+                                    .text_color(muted)
+                                    .child(format!("free of {}", format_size(volume.total))),
+                            ),
+                    )
+                    .child(usage_bar(fraction, color, px(10.), cx))
+                    .child(div().text_sm().text_color(muted).child(format!(
+                        "{}% full, {} used",
+                        (fraction * 100.0).round(),
+                        format_size(volume.total.saturating_sub(volume.available))
+                    ))),
+            )
+            .child(
+                v_flex()
+                    .w(px(200.))
+                    .flex_none()
+                    .gap_2()
+                    .child(
+                        Button::new(("scan", i))
+                            .primary()
+                            .label(format!("Scan {}", volume.name))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.start_scan(mount.clone(), cx)
+                            })),
+                    )
+                    .when_some(std::env::var_os("HOME"), |buttons, home| {
+                        buttons.child(Button::new("scan-home").label("Scan Home Folder").on_click(
+                            cx.listener(move |this, _, _, cx| {
+                                this.start_scan(PathBuf::from(&home), cx)
+                            }),
+                        ))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// `first` leaves out the divider above the row.
+    fn render_volume_row(&self, i: usize, first: bool, cx: &mut Context<Self>) -> AnyElement {
+        let volume = &self.volumes[i];
+        let fraction = volume.used_fraction();
+        let color = status_color(volumes::Status::of(fraction), cx);
+        let mount = volume.mount.clone();
+        let (icon, host) = match &volume.kind {
+            volumes::Kind::Network { host } => (IconName::Globe, Some(host.clone())),
+            _ => (IconName::HardDrive, None),
+        };
+        h_flex()
+            .gap_3()
+            .px_4()
+            .py_2p5()
+            .when(!first, |row| row.border_t_1())
+            .border_color(cx.theme().border)
+            .child(Icon::new(icon).flex_none())
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_none()
+                            .max_w(px(180.))
+                            .truncate()
+                            .child(volume.name.clone()),
+                    )
+                    .when_some(host, |name, host| {
+                        name.child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("on {host}")),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .w(px(110.))
+                    .flex_none()
+                    .child(usage_bar(fraction, color, px(6.), cx)),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!(
+                        "{} free of {}",
+                        format_size(volume.available),
+                        format_size(volume.total)
+                    )),
+            )
+            .child(
+                Button::new(("scan", i)).small().label("Scan").on_click(
+                    cx.listener(move |this, _, _, cx| this.start_scan(mount.clone(), cx)),
+                ),
             )
             .into_any_element()
     }
@@ -527,6 +685,29 @@ fn describe_error(error: &std::io::Error) -> String {
         Some(at) => message[..at].to_string(),
         None => message,
     }
+}
+
+fn status_color(status: volumes::Status, cx: &App) -> Hsla {
+    match status {
+        volumes::Status::Fine => cx.theme().success,
+        volumes::Status::FillingUp => cx.theme().warning,
+        volumes::Status::AlmostFull => cx.theme().danger,
+    }
+}
+
+fn usage_bar(fraction: f32, color: Hsla, height: Pixels, cx: &App) -> impl IntoElement {
+    div()
+        .h(height)
+        .w_full()
+        .rounded_full()
+        .bg(cx.theme().muted)
+        .child(
+            div()
+                .h_full()
+                .w(relative(fraction))
+                .rounded_full()
+                .bg(color),
+        )
 }
 
 fn centered(content: impl IntoElement) -> AnyElement {

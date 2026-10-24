@@ -574,13 +574,29 @@ impl Tree {
 }
 
 fn mount_points() -> HashSet<PathBuf> {
-    let mut mounts: *mut libc::statfs = std::ptr::null_mut();
-    let count = unsafe { libc::getmntinfo(&mut mounts, libc::MNT_NOWAIT) };
-    if count <= 0 {
-        return HashSet::new();
+    mounts().iter().map(mount_path).collect()
+}
+
+/// Every mounted filesystem. Read with getfsstat(2) into a buffer of our own, since
+/// getmntinfo(3) shares one buffer across the process and concurrent calls race on it.
+pub fn mounts() -> Vec<libc::statfs> {
+    loop {
+        let count = unsafe { libc::getfsstat(std::ptr::null_mut(), 0, libc::MNT_NOWAIT) };
+        if count <= 0 {
+            return vec![];
+        }
+        // Room for a few mounts appearing between the two calls.
+        let mut buf: Vec<libc::statfs> = Vec::with_capacity(count as usize + 4);
+        let size = (buf.capacity() * size_of::<libc::statfs>()) as libc::c_int;
+        let filled = unsafe { libc::getfsstat(buf.as_mut_ptr(), size, libc::MNT_NOWAIT) };
+        if filled < 0 {
+            return vec![];
+        }
+        if (filled as usize) < buf.capacity() {
+            unsafe { buf.set_len(filled as usize) };
+            return buf;
+        }
     }
-    let mounts = unsafe { std::slice::from_raw_parts(mounts, count as usize) };
-    mounts.iter().map(mount_path).collect()
 }
 
 /// Bytes in use on the volume mounted at `path`, counted as total minus available, as
