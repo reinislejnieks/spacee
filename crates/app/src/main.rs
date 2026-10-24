@@ -10,9 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::{IconName as AppIcon, icon_assets};
-use gpui_kit::component::button::Button;
 use gpui_kit::component::radio::RadioGroup;
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, Theme, h_flex, v_flex};
+use gpui_kit::component::{Icon, IconName, Theme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::Progress;
@@ -23,7 +22,7 @@ use crate::settings::{Appearance, Settings};
 use crate::style::{MONO, Palette, Tone};
 use crate::volumes::Volume;
 
-actions!(spacee, [OpenSettings, Quit]);
+actions!(spacee, [CancelScan, OpenSettings, Quit]);
 
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(100);
 /// Rows in the chart that grows while a scan runs.
@@ -37,17 +36,20 @@ enum Page {
 }
 
 enum Scan {
-    Running {
-        name: String,
-        progress: Arc<Progress>,
-        _task: Task<()>,
-        _redraw: Task<()>,
-    },
+    Running(Running),
     Done(Entity<Browser>),
-    Failed {
-        name: String,
-        error: String,
-    },
+    Failed { name: String, error: String },
+}
+
+struct Running {
+    name: String,
+    progress: Arc<Progress>,
+    started: Instant,
+    /// The bytes used on the volume being scanned, when the scan covers a whole volume,
+    /// so progress can be told as a share of it.
+    volume_used: Option<u64>,
+    _task: Task<()>,
+    _redraw: Task<()>,
 }
 
 /// A share of a volume's space, `color` `None` for the free part.
@@ -131,7 +133,9 @@ impl Spacee {
             let (path, progress) = (path.clone(), progress.clone());
             async move { scan::scan(&path, &progress) }
         });
-        let name = display_name(&path);
+        let volume = volumes::list().into_iter().find(|v| v.mount == path);
+        let volume_used = volume.as_ref().map(Volume::used);
+        let name = volume.map_or_else(|| folder_name(&path), |v| v.name);
         let _task = cx.spawn({
             let name = name.clone();
             async move |this, cx| {
@@ -157,18 +161,28 @@ impl Spacee {
                 }
             }
         });
-        self.scan = Some(Scan::Running {
+        self.scan = Some(Scan::Running(Running {
             name,
             progress,
+            started: Instant::now(),
+            volume_used,
             _task,
             _redraw,
-        });
+        }));
         self.show(Page::Scan, cx);
     }
 
+    /// Cancels the running scan from its own page and goes back to the volumes.
+    fn stop_scanning(&mut self, cx: &mut Context<Self>) {
+        if self.page == Page::Scan && matches!(self.scan, Some(Scan::Running(_))) {
+            self.cancel_scan();
+            self.show(Page::Volumes, cx);
+        }
+    }
+
     fn cancel_scan(&mut self) {
-        if let Some(Scan::Running { progress, .. }) = &self.scan {
-            progress.cancel();
+        if let Some(Scan::Running(running)) = &self.scan {
+            running.progress.cancel();
             self.scan = None;
         }
     }
@@ -203,7 +217,7 @@ impl Spacee {
 
         let scan = self.scan.as_ref().map(|scan| {
             let (name, detail) = match scan {
-                Scan::Running { name, .. } => (name.clone(), "scanning…".to_string()),
+                Scan::Running(running) => (running.name.clone(), "scanning…".to_string()),
                 Scan::Done(browser) => {
                     let tree = browser.read(cx).tree();
                     (
@@ -213,7 +227,7 @@ impl Spacee {
                 }
                 Scan::Failed { name, .. } => (name.clone(), "failed".to_string()),
             };
-            let running = matches!(scan, Scan::Running { .. });
+            let running = matches!(scan, Scan::Running(_));
             item(
                 "nav-scan",
                 Icon::new(AppIcon::TextAlignStart),
@@ -809,18 +823,21 @@ impl Spacee {
                             ),
                     ),
             ),
-            Some(Scan::Running { name, progress, .. }) => self.render_running(name, progress, cx),
+            Some(Scan::Running(running)) => self.render_running(running, width, p, cx),
         }
     }
 
-    /// The folders found so far as a sunburst that grows while the scan runs.
+    /// The scan's progress, and the folders found so far as an icicle that grows while it
+    /// runs.
     fn render_running(
         &self,
-        name: &str,
-        progress: &Progress,
+        running: &Running,
+        width: Pixels,
+        p: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let start = Instant::now();
+        let progress = &running.progress;
         let live = progress.snapshot().map(|tree| {
             let options = Options {
                 max_depth: LIVE_LEVELS,
@@ -838,10 +855,16 @@ impl Spacee {
                 start.elapsed()
             );
         }
-        let dark = cx.theme().is_dark();
-        let levels = LIVE_LEVELS;
+        let (files, bytes) = (progress.files(), progress.bytes());
+        let elapsed = running.started.elapsed().as_secs_f32();
+        let done = running
+            .volume_used
+            .map(|used| (bytes as f32 / used.max(1) as f32).min(1.0));
+        let eta = done.filter(|&f| f > 0.02).map(|f| elapsed * (1.0 - f) / f);
+
+        let dark = p.dark;
         let overlay = self.live_bounds.map(|bounds| {
-            let geometry = chart::Geometry::new(bounds, levels);
+            let geometry = chart::Geometry::new(bounds, LIVE_LEVELS);
             let mut labels = match &live {
                 Some((tree, layout)) => {
                     let size = tree.node(tree.root()).size;
@@ -850,71 +873,245 @@ impl Spacee {
                 None => vec![],
             };
             labels.push(chart::root_label(
-                name.to_string(),
-                format!("{} files", format_count(progress.files())),
-                format_size(progress.bytes()),
+                running.name.clone(),
+                format!("{} files", format_count(files)),
+                format_size(bytes),
                 geometry,
                 cx,
             ));
             labels
         });
         let this = cx.entity();
+        let chart = div()
+            .relative()
+            .flex_1()
+            .min_h_0()
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        this.update(cx, |this, cx| {
+                            if this.live_bounds != Some(bounds) {
+                                this.live_bounds = Some(bounds);
+                                cx.notify();
+                            }
+                        })
+                    },
+                    move |bounds, _, window, _| {
+                        let geometry = chart::Geometry::new(bounds, LIVE_LEVELS);
+                        if let Some((tree, layout)) = &live {
+                            let arcs = layout.draw_arcs();
+                            chart::paint(tree, &arcs, None, dark, geometry, window);
+                        }
+                    },
+                )
+                .size_full(),
+            )
+            .children(overlay.into_iter().flatten());
+
+        let track = div()
+            .relative()
+            .h(px(8.))
+            .w_full()
+            .rounded_full()
+            .bg(p.well)
+            .overflow_hidden();
+        let fill = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .rounded_full()
+            .bg(linear_gradient(
+                90.,
+                linear_color_stop(p.mint.opacity(0.7), 0.),
+                linear_color_stop(p.mint, 1.),
+            ));
+        let bar = match done {
+            Some(fraction) => track.child(fill.left_0().w(relative(fraction))),
+            // With no total to measure against, a stretch of the bar sweeps across it.
+            None => {
+                let phase = (elapsed * 0.5).fract() * 1.3 - 0.3;
+                track.child(fill.left(relative(phase)).w(relative(0.3)))
+            }
+        };
+        let (value, unit) = split_size(bytes);
+        let stat = |label: &'static str, tag: Option<Div>| {
+            style::card(p)
+                .min_w_0()
+                .px(px(18.))
+                .py_4()
+                .flex()
+                .flex_col()
+                .gap_1p5()
+                .child(
+                    h_flex()
+                        .h(px(20.))
+                        .justify_between()
+                        .gap_2()
+                        .child(style::caption(label, p))
+                        .children(tag),
+                )
+        };
+        let big = |text: String| {
+            div()
+                .text_size(px(34.))
+                .line_height(px(38.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(text)
+        };
+        let small = |text: String| {
+            div()
+                .truncate()
+                .font_family(MONO)
+                .text_size(px(11.5))
+                .text_color(p.faint)
+                .child(text)
+        };
+        let rate = files as f32 / elapsed.max(0.1);
+        let columns = if width < px(720.) { 1 } else { 3 };
+
         v_flex()
+            .id("running")
             .size_full()
+            .overflow_y_scroll()
+            .px_5()
+            .pt(px(18.))
+            .pb_5()
+            .gap(px(14.))
+            .child(
+                style::glow_card(p)
+                    .flex_none()
+                    .px_6()
+                    .py(px(22.))
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .child(
+                        h_flex()
+                            .gap(px(14.))
+                            .child(
+                                div()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_size(px(26.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(format!("Scanning {}", running.name).to_uppercase()),
+                            )
+                            .child(style::dot_tag("Live", Tone::Mint, p))
+                            .child(div().flex_1())
+                            .child(
+                                style::button("cancel", style::Button::Normal, p)
+                                    .child(Icon::new(IconName::Close).size_3p5())
+                                    .child("Cancel")
+                                    .child(style::kbd("Esc", p))
+                                    .on_click(cx.listener(|this, _, _, cx| this.stop_scanning(cx))),
+                            ),
+                    )
+                    .child(bar),
+            )
             .child(
                 div()
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .m_3()
+                    .flex_none()
+                    .grid()
+                    .grid_cols(columns)
+                    .gap_3()
                     .child(
-                        canvas(
-                            move |bounds, _, cx| {
-                                this.update(cx, |this, cx| {
-                                    if this.live_bounds != Some(bounds) {
-                                        this.live_bounds = Some(bounds);
-                                        cx.notify();
-                                    }
-                                })
-                            },
-                            move |bounds, _, window, _| {
-                                let geometry = chart::Geometry::new(bounds, levels);
-                                if let Some((tree, layout)) = &live {
-                                    let arcs = layout.draw_arcs();
-                                    chart::paint(tree, &arcs, None, dark, geometry, window);
-                                }
-                            },
+                        stat(
+                            "Files",
+                            Some(style::tag(
+                                format!("{}/s", format_count(rate as u64)),
+                                Tone::Mint,
+                                p,
+                            )),
                         )
-                        .size_full(),
+                        .child(big(format_count(files)))
+                        .child(small("Folders are sized as they finish".into())),
                     )
-                    .children(overlay.into_iter().flatten()),
+                    .child(
+                        stat(
+                            "Found",
+                            done.map(|f| style::tag(format!("{:.0}%", f * 100.0), Tone::Mint, p)),
+                        )
+                        .child(
+                            h_flex()
+                                .items_baseline()
+                                .gap_1()
+                                .child(big(value))
+                                .child(div().text_size(px(15.)).text_color(p.dim).child(unit)),
+                        )
+                        .child(small(match running.volume_used {
+                            Some(used) => format!("of {} used", format_size(used)),
+                            None => "in this folder so far".into(),
+                        })),
+                    )
+                    .child(
+                        stat(
+                            "Elapsed",
+                            eta.map(|eta| {
+                                style::tag(format!("ETA ~{}", format_duration(eta)), Tone::Blue, p)
+                            }),
+                        )
+                        .child(big(format_duration(elapsed)))
+                        .child(small(match eta {
+                            Some(_) => "Estimated from the space used".into(),
+                            None => "No estimate for a folder".into(),
+                        })),
+                    ),
             )
             .child(
                 h_flex()
                     .flex_none()
-                    .h(px(52.))
-                    .px_4()
                     .gap_3()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
+                    .px_4()
+                    .py(px(11.))
+                    .rounded(px(14.))
+                    .border_1()
+                    .border_color(p.line)
+                    .bg(p.inset)
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap_2()
+                            .child(style::dot(p.mint, px(7.)))
+                            .child(
+                                div()
+                                    .text_size(px(11.5))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.mint)
+                                    .child("READING"),
+                            ),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
-                            .text_sm()
                             .truncate()
-                            .text_color(cx.theme().muted_foreground)
+                            .font_family(MONO)
+                            .text_size(px(12.5))
+                            .text_color(p.caption)
                             .child(progress.current().display().to_string()),
-                    )
-                    .child(
-                        Button::new("cancel")
-                            .small()
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.cancel_scan();
-                                this.show(Page::Volumes, cx);
-                            })),
                     ),
+            )
+            .child(
+                style::card(p)
+                    .flex_1()
+                    .min_h(px(320.))
+                    .p(px(14.))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .child(style::caption("Icicle", p))
+                            .child(
+                                div()
+                                    .font_family(MONO)
+                                    .text_size(px(11.5))
+                                    .text_color(p.faint)
+                                    .child("Grows as folders finish"),
+                            ),
+                    )
+                    .child(chart),
             )
             .into_any_element()
     }
@@ -1058,12 +1255,21 @@ fn centered(content: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-/// The volume's name, such as "Macintosh HD", when `path` is where one is mounted, else
-/// the folder's name.
-fn display_name(path: &Path) -> String {
-    if let Some(volume) = volumes::list().into_iter().find(|v| v.mount == path) {
-        return volume.name;
+/// The size's number and unit apart, such as ("380", "GB").
+fn split_size(bytes: u64) -> (String, String) {
+    let size = format_size(bytes);
+    match size.split_once(' ') {
+        Some((value, unit)) => (value.into(), unit.into()),
+        None => (size, String::new()),
     }
+}
+
+fn format_duration(seconds: f32) -> String {
+    let seconds = seconds as u64;
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+fn folder_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
@@ -1106,6 +1312,7 @@ fn main() {
             cx.bind_keys([
                 KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("cmd-q", Quit, None),
+                KeyBinding::new("escape", CancelScan, None),
                 KeyBinding::new("space", browser::QuickLook, Some("Browser")),
             ]);
             cx.set_menus(vec![Menu {
@@ -1139,6 +1346,10 @@ fn main() {
                 })
             })
             .expect("failed to open window");
+            cx.on_action({
+                let spacee = spacee.clone();
+                move |_: &CancelScan, cx| spacee.update(cx, |this, cx| this.stop_scanning(cx))
+            });
             cx.on_action(move |_: &OpenSettings, cx| {
                 spacee.update(cx, |this, cx| this.show(Page::Settings, cx));
             });
