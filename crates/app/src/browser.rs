@@ -107,6 +107,10 @@ impl Browser {
         self.root_name.clone()
     }
 
+    pub fn tree(&self) -> &Tree {
+        &self.tree
+    }
+
     fn display_name(&self, id: NodeId) -> String {
         match id == self.tree.root() {
             true => self.root_name.clone(),

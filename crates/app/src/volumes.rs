@@ -11,8 +11,12 @@ pub struct Volume {
 }
 
 impl Volume {
+    pub fn used(&self) -> u64 {
+        self.total.saturating_sub(self.available)
+    }
+
     pub fn used_fraction(&self) -> f32 {
-        self.total.saturating_sub(self.available) as f32 / self.total.max(1) as f32
+        self.used() as f32 / self.total.max(1) as f32
     }
 }
 
