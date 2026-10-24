@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Draws the app icon, a ringed planet on a night-sky tile, into crates/app/AppIcon.icns.
 
-The ring is cut into pieces of different lengths, like a disk split between folders.
+The ring is cut into pieces of different lengths, like a disk split between file types,\nin the colours the chart uses for them.
 
 Needs Pillow (`pip install pillow`). Rerun it after changing the design.
 """
+import colorsys
 import math
 import shutil
 import subprocess
@@ -28,15 +29,16 @@ INNER = 0.74
 TILT = math.radians(-18)
 GAP = 0.035  # radians of the ellipse's parameter between ring pieces
 
-# Each piece of the ring: (share of the full turn, colour).
+# Each piece of the ring: (share of the full turn, hue, saturation), using the chart's
+# file-type colours (palette() in crates/app/src/chart.rs).
 PIECES = [
-    (0.30, (255, 181, 71)),
-    (0.18, (255, 122, 89)),
-    (0.14, (255, 227, 163)),
-    (0.12, (255, 150, 80)),
-    (0.10, (250, 205, 120)),
-    (0.09, (255, 122, 89)),
-    (0.07, (255, 227, 163)),
+    (0.30, 0.76, 0.55),  # archives and disk images
+    (0.18, 0.36, 0.55),  # code and builds
+    (0.14, 0.12, 0.80),  # images
+    (0.12, 0.92, 0.72),  # video
+    (0.10, 0.60, 0.72),  # documents
+    (0.09, 0.04, 0.78),  # audio
+    (0.07, 0.50, 0.65),  # apps
 ]
 
 STARS = [(250, 260, 5), (760, 220, 4), (820, 420, 3), (205, 640, 3), (690, 830, 4), (330, 820, 3)]
@@ -62,7 +64,8 @@ def ring(front):
     """Ring pieces in front of the planet (lower half of the ellipse) or behind it,
     split where the ring passes behind the planet's edge."""
     shapes, t = [], 0.0
-    for share, colour in PIECES:
+    for share, hue, saturation in PIECES:
+        colour = tuple(round(c * 255) for c in colorsys.hls_to_rgb(hue, 0.58, saturation))
         start, end = t + GAP / 2, t + share * math.tau - GAP / 2
         t += share * math.tau
         # The ring's lower half, t in (0, pi), passes in front of the planet.
