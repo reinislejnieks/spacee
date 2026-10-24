@@ -1,6 +1,8 @@
 use std::collections::HashSet;
+use std::ffi::{CStr, CString};
 use std::fs;
 use std::io;
+use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
 use std::os::macos::fs::MetadataExt as _;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt;
@@ -208,9 +210,8 @@ pub fn scan(root: &Path, progress: &Progress) -> io::Result<Tree> {
 }
 
 fn walk(root: &Path, mounts: HashSet<PathBuf>, progress: &Progress) -> io::Result<Tree> {
-    let meta = fs::symlink_metadata(root)?;
+    let meta = Meta::of(&fs::symlink_metadata(root)?);
     let walker = Walker {
-        dev: meta.dev(),
         mounts,
         hard_links: Mutex::new(HashSet::new()),
         errors: Mutex::new(vec![]),
@@ -235,12 +236,13 @@ fn walk(root: &Path, mounts: HashSet<PathBuf>, progress: &Progress) -> io::Resul
 const SF_DATALESS: u32 = 0x4000_0000;
 
 struct Walker<'a> {
-    dev: u64,
-    /// Mount points below the root. On macOS the boot volume's System and Data volumes
-    /// share a device number, so this, not `dev`, keeps a scan of `/` from walking
-    /// `/System/Volumes/Data` as well as the firmlinks into it.
+    /// Mount points below the root, which the walk doesn't enter. getattrlistbulk(2)
+    /// reports a mount point with the attributes of the folder it covers, device number
+    /// included, so only the path tells it apart.
     mounts: HashSet<PathBuf>,
-    hard_links: Mutex<HashSet<(u64, u64)>>,
+    /// File IDs of hard-linked files already counted. Everything the walk reaches shares
+    /// the root's device number, so the ID alone identifies a file.
+    hard_links: Mutex<HashSet<u64>>,
     errors: Mutex<Vec<ScanError>>,
     progress: &'a Progress,
 }
@@ -265,17 +267,10 @@ struct Built {
 
 impl Walker<'_> {
     /// `live` is `None` only for the root.
-    fn entry(
-        &self,
-        name: Box<str>,
-        path: &Path,
-        meta: &fs::Metadata,
-        live: Option<Live<'_>>,
-    ) -> Built {
-        let ft = meta.file_type();
+    fn entry(&self, name: Box<str>, path: &Path, meta: &Meta, live: Option<Live<'_>>) -> Built {
         let own = self.allocated(meta);
         self.progress.bytes.fetch_add(own, Ordering::Relaxed);
-        if ft.is_symlink() {
+        if meta.kind == Kind::Symlink {
             return Built {
                 name,
                 kind: Kind::Symlink,
@@ -284,7 +279,7 @@ impl Walker<'_> {
                 children: vec![],
             };
         }
-        if !ft.is_dir() {
+        if meta.kind == Kind::File {
             if let Some(live) = live {
                 live.bytes.fetch_add(own, Ordering::Relaxed);
             }
@@ -310,10 +305,7 @@ impl Walker<'_> {
             }
         };
         live.bytes.fetch_add(own, Ordering::Relaxed);
-        let children = if meta.dev() == self.dev
-            && meta.st_flags() & SF_DATALESS == 0
-            && !self.mounts.contains(path)
-        {
+        let children = if meta.flags & SF_DATALESS == 0 && !self.mounts.contains(path) {
             self.children(path, live)
         } else {
             vec![]
@@ -334,28 +326,22 @@ impl Walker<'_> {
         if let Ok(mut current) = self.progress.current.try_lock() {
             dir.clone_into(&mut current);
         }
-        let entries = match fs::read_dir(dir) {
+        let entries = match list(dir) {
             Ok(entries) => entries,
             Err(error) => {
                 self.error(dir.to_path_buf(), error);
                 return vec![];
             }
         };
-        let entries: Vec<_> = entries
-            .filter_map(|e| e.map_err(|error| self.error(dir.to_path_buf(), error)).ok())
-            .collect();
         entries
             .into_par_iter()
-            .filter_map(|entry| {
+            .filter_map(|(name, meta)| {
                 if self.progress.is_cancelled() {
                     return None;
                 }
-                let path = entry.path();
-                match entry.metadata() {
-                    Ok(meta) => {
-                        let name = entry.file_name().to_string_lossy().into();
-                        Some(self.entry(name, &path, &meta, Some(live)))
-                    }
+                let path = dir.join(&*name);
+                match meta {
+                    Ok(meta) => Some(self.entry(name, &path, &meta, Some(live))),
                     Err(error) => {
                         self.error(path, error);
                         None
@@ -366,24 +352,164 @@ impl Walker<'_> {
     }
 
     /// A hard-linked file's blocks count only at the first link the walk reaches.
-    fn allocated(&self, meta: &fs::Metadata) -> u64 {
-        let bytes = meta.blocks() * 512;
-        if meta.is_file() && meta.nlink() > 1 {
-            let first = self
-                .hard_links
-                .lock()
-                .unwrap()
-                .insert((meta.dev(), meta.ino()));
+    fn allocated(&self, meta: &Meta) -> u64 {
+        if meta.kind == Kind::File && meta.links > 1 {
+            let first = self.hard_links.lock().unwrap().insert(meta.file_id);
             if !first {
                 return 0;
             }
         }
-        bytes
+        meta.allocated
     }
 
     fn error(&self, path: PathBuf, error: io::Error) {
         self.errors.lock().unwrap().push(ScanError { path, error });
     }
+}
+
+/// What the walk needs to know about an entry, read with getattrlistbulk(2) for a
+/// folder's contents and with lstat for the root.
+struct Meta {
+    kind: Kind,
+    /// Bytes on disk, before hard links are deduplicated.
+    allocated: u64,
+    file_id: u64,
+    links: u32,
+    flags: u32,
+}
+
+impl Meta {
+    fn of(meta: &fs::Metadata) -> Meta {
+        let ft = meta.file_type();
+        Meta {
+            kind: if ft.is_symlink() {
+                Kind::Symlink
+            } else if ft.is_dir() {
+                Kind::Dir
+            } else {
+                Kind::File
+            },
+            allocated: meta.blocks() * 512,
+            file_id: meta.ino(),
+            links: meta.nlink() as u32,
+            flags: meta.st_flags(),
+        }
+    }
+}
+
+// Missing from the libc crate.
+const ATTR_CMN_ERROR: u32 = 0x2000_0000;
+const VDIR: u32 = 2;
+const VLNK: u32 = 5;
+
+/// Lists `dir` with each entry's metadata. getattrlistbulk(2) returns a batch of entries
+/// with their attributes in one call, where readdir would need an lstat per entry.
+fn list(dir: &Path) -> io::Result<Vec<(Box<str>, io::Result<Meta>)>> {
+    let c_dir = CString::new(dir.as_os_str().as_bytes())?;
+    let fd = unsafe { libc::open(c_dir.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    let mut request = libc::attrlist {
+        bitmapcount: libc::ATTR_BIT_MAP_COUNT,
+        reserved: 0,
+        commonattr: libc::ATTR_CMN_RETURNED_ATTRS
+            | libc::ATTR_CMN_NAME
+            | ATTR_CMN_ERROR
+            | libc::ATTR_CMN_OBJTYPE
+            | libc::ATTR_CMN_FLAGS
+            | libc::ATTR_CMN_FILEID,
+        volattr: 0,
+        dirattr: libc::ATTR_DIR_ALLOCSIZE,
+        fileattr: libc::ATTR_FILE_LINKCOUNT | libc::ATTR_FILE_ALLOCSIZE,
+        forkattr: 0,
+    };
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut entries = vec![];
+    loop {
+        let count = unsafe {
+            libc::getattrlistbulk(
+                fd.as_raw_fd(),
+                (&raw mut request).cast(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                0,
+            )
+        };
+        if count < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if count == 0 {
+            return Ok(entries);
+        }
+        let mut at = 0;
+        for _ in 0..count {
+            let len = read_u32(&buf, at) as usize;
+            entries.push(parse(&buf[at..at + len]));
+            at += len;
+        }
+    }
+}
+
+/// Reads one entry of a getattrlistbulk(2) buffer. Attributes come in the order of their
+/// bits, each 4-byte aligned, and those the volume didn't return are left out.
+fn parse(entry: &[u8]) -> (Box<str>, io::Result<Meta>) {
+    let returned = libc::attribute_set_t {
+        commonattr: read_u32(entry, 4),
+        volattr: read_u32(entry, 8),
+        dirattr: read_u32(entry, 12),
+        fileattr: read_u32(entry, 16),
+        forkattr: read_u32(entry, 20),
+    };
+    let mut at = 24;
+    let mut next = |size: usize| {
+        at += size;
+        at - size
+    };
+    let error = if returned.commonattr & ATTR_CMN_ERROR != 0 {
+        read_u32(entry, next(4))
+    } else {
+        0
+    };
+    let name_at = next(8);
+    let name_start = name_at + read_u32(entry, name_at) as usize;
+    let name = CStr::from_bytes_until_nul(&entry[name_start..])
+        .map_or_else(|_| "".into(), |name| name.to_string_lossy().into());
+    if error != 0 {
+        return (name, Err(io::Error::from_raw_os_error(error as i32)));
+    }
+    let mut field = |bit: u32, group: u32, size: usize| (group & bit != 0).then(|| next(size));
+    let kind = match field(libc::ATTR_CMN_OBJTYPE, returned.commonattr, 4) {
+        Some(at) if read_u32(entry, at) == VDIR => Kind::Dir,
+        Some(at) if read_u32(entry, at) == VLNK => Kind::Symlink,
+        _ => Kind::File,
+    };
+    let flags =
+        field(libc::ATTR_CMN_FLAGS, returned.commonattr, 4).map_or(0, |at| read_u32(entry, at));
+    let file_id =
+        field(libc::ATTR_CMN_FILEID, returned.commonattr, 8).map_or(0, |at| read_u64(entry, at));
+    let dir_size = field(libc::ATTR_DIR_ALLOCSIZE, returned.dirattr, 8);
+    let links =
+        field(libc::ATTR_FILE_LINKCOUNT, returned.fileattr, 4).map_or(1, |at| read_u32(entry, at));
+    let file_size = field(libc::ATTR_FILE_ALLOCSIZE, returned.fileattr, 8);
+    let allocated = dir_size.or(file_size).map_or(0, |at| read_u64(entry, at));
+    let meta = Meta {
+        kind,
+        allocated,
+        file_id,
+        links,
+        flags,
+    };
+    (name, Ok(meta))
+}
+
+fn read_u32(buf: &[u8], at: usize) -> u32 {
+    u32::from_ne_bytes(buf[at..at + 4].try_into().unwrap())
+}
+
+fn read_u64(buf: &[u8], at: usize) -> u64 {
+    u64::from_ne_bytes(buf[at..at + 8].try_into().unwrap())
 }
 
 impl Tree {
@@ -557,6 +683,17 @@ mod tests {
         assert_eq!(tree.errors.len(), 1);
         assert_eq!(tree.errors[0].path, locked);
         assert_eq!(tree.node(tree.root()).file_count, 1);
+    }
+
+    #[test]
+    fn folder_too_big_for_one_bulk_read_is_listed_in_full() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..2000 {
+            write(&dir.path().join(format!("{i:0>120}")), 1);
+        }
+
+        let tree = scan(dir.path(), &Progress::default()).unwrap();
+        assert_eq!(tree.node(tree.root()).file_count, 2000);
     }
 
     #[test]

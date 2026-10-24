@@ -57,7 +57,7 @@ pub struct Tree { pub nodes: Vec<Node>, pub root: NodeId, pub errors: Vec<ScanEr
 ```
 
 How the walk works:
-- **Parallel walk** with `jwalk` (rayon-based) to start. If profiling shows it's needed, swap in a custom walker built on `getattrlistbulk(2)`, which returns name + type + allocated size for a whole directory in one syscall. This is the main thing that makes the fastest scanners fast on APFS. Keep the walker behind a trait so it can be replaced.
+- **Parallel walk** on rayon, listing each directory with `getattrlistbulk(2)`, which returns a batch of entries with type, flags, file ID, link count and allocated size in one syscall, where `readdir` needs an `lstat` per entry. Measured warm against the `readdir` + `lstat` walker it replaced: `~` (2.3M files) 12.6–12.9 s against 16.7–17.7 s, with system CPU 65–67 s against 91–95 s; `/` 17.8 s against 24.0 s. Totals match apart from files that changed between runs. A mount point now counts as the folder it covers (a few KiB less on `/`), since that is what `getattrlistbulk` reports for it. Cold-cache runs weren't measured, since `purge` needs root.
 - **Count allocated size, not logical size.** Use `st_blocks * 512`. Sparse files and compressed files would be wrong otherwise.
 - **Count hard links once** by deduplicating on `(dev, ino)` for files with `nlink > 1`.
 - **Stay on one device.** Compare `st_dev` and don't cross mount points.
@@ -135,7 +135,7 @@ Each milestone ends in something you can run and check.
 | 5 | Collector + Trash + in-place size update; reveal / Quick Look | Trash a test folder → it appears in Finder's Trash and parent sizes drop by exactly its size |
 | 6 | Boot-volume correctness: firmlinks, hidden space, FDA flow | Scanned total + hidden ≈ `df` used for `/` |
 | 7 | Polish: colors, typography, empty and error states, sunburst that grows during the scan, app icon, `.dmg` | Screenshots reviewed in dark and light |
-| 8 (opt.) | `getattrlistbulk` walker | Benchmark vs. `jwalk` on a full home-dir scan, run cold and warm |
+| 8 (opt.) | `getattrlistbulk` walker | Benchmark vs. the `readdir` walker on a full home-dir scan, run cold and warm |
 
 ---
 
