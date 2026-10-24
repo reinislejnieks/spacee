@@ -16,9 +16,10 @@ else
 fi
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/target/$PROFILE/spacee" "$APP/Contents/MacOS/spacee"
 cp "$ROOT/crates/app/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/crates/app/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --options runtime --timestamp=none --sign "$IDENTITY" "$APP"
 

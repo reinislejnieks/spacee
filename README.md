@@ -87,6 +87,8 @@ A pre-commit hook in `.githooks` runs `cargo fmt --check` and `cargo clippy -- -
 git config core.hooksPath .githooks
 ```
 
+The app icon, `crates/app/AppIcon.icns`, is drawn by `scripts/icon.py` (needs Pillow). Edit and rerun it to change the icon.
+
 The workspace has three crates:
 
 - `crates/scan` walks the filesystem in parallel and builds the size tree. It counts allocated bytes, counts hard links once, and does not follow symlinks or cross onto other volumes or mount points.
