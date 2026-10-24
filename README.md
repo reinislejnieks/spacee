@@ -1,12 +1,12 @@
 # Spacee
 
-A native macOS app that shows what's using your disk as an interactive sunburst,. Built in Rust with [GPUI](https://www.gpui.rs/) and [gpui-kit](https://github.com/longbridge/gpui-kit).
+A native macOS app that shows what's using your disk as an interactive sunburst. Built in Rust with [GPUI](https://www.gpui.rs/) and [gpui-kit](https://github.com/longbridge/gpui-kit).
 
 Pick a volume or a folder (or drop one onto the window) and Spacee scans it, growing the chart as it goes, and draws each subfolder as a ring segment sized by the disk space it takes. Hover a segment to see its name and size, click a folder to zoom in, and click the center to go back up.
 
-To free space, drag segments or list rows into the collector tray at the bottom, or right-click them and choose Add to Collector, then press Move to Trash. Spacee only ever moves items to the Trash, never deletes them, and updates the sizes in place without a rescan. The right-click menu also has Reveal in Finder, Quick Look and Copy Path, and the space bar opens Quick Look on the hovered item.
+To free space, drag segments or list rows into the Trash tray at the bottom, or right-click them and choose Mark for Trash, then press Move to Trash. Spacee only ever moves items to the Trash, never deletes them, and updates the sizes in place without a rescan. The right-click menu also has Reveal in Finder, Quick Look and Copy Path, and the space bar opens Quick Look on the hovered item.
 
-Scanning a whole volume adds a grey "Hidden space" item: the space the volume reports as used that no file accounts for, such as snapshots, purgeable space, the other system volumes in the container, and folders Spacee wasn't allowed to read.
+Scanning a whole volume adds a grey "Unaccounted space" item: the space the volume reports as used that no file accounts for, such as snapshots, purgeable space, the other system volumes in the container, and folders Spacee wasn't allowed to read.
 
 The roadmap and design live in [PLAN.md](PLAN.md).
 
@@ -95,7 +95,7 @@ A pre-commit hook in `.githooks` runs `cargo fmt --check` and `cargo clippy -- -
 git config core.hooksPath .githooks
 ```
 
-The app icon, `crates/app/AppIcon.icns`, is drawn by `scripts/icon.py` (needs Pillow). Edit and rerun it to change the icon.
+The app icon, a ringed planet whose ring is split like a disk, lives in `crates/app/AppIcon.icns` and is drawn by `scripts/icon.py` (needs Pillow). Edit and rerun it to change the icon.
 
 The workspace has three crates:
 

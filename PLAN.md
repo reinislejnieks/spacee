@@ -15,9 +15,9 @@ Stack: Rust (1.97), [GPUI](https://docs.rs/gpui) for rendering, [gpui-kit](https
    - Clicking a directory zooms into it with an animation. Clicking the center or the breadcrumb goes back up.
    - Items too small to draw are merged into one grey "smaller objects" arc per directory.
 4. **Side list.** The current folder's children sorted by size, each with a size bar. It stays in sync with the sunburst on hover and click.
-5. **Collector.** Drag an arc or a list row into a bottom tray, or right-click it and choose Add to Collector. Collecting a folder drops anything already collected inside it. "Move to Trash" moves everything in the tray to the Trash after a confirmation dialog. Tree sizes then update in place, with no rescan. Items that fail to move stay in the tray with the error beside them.
+5. **Trash tray.** Drag an arc or a list row into a bottom tray, or right-click it and choose Mark for Trash. Marking a folder drops anything already marked inside it. "Move to Trash" moves everything in the tray to the Trash after a confirmation dialog. Tree sizes then update in place, with no rescan. Items that fail to move stay in the tray with the error beside them.
 6. **Actions.** Right-click menu with Reveal in Finder, Quick Look and Copy Path. Space bar opens Quick Look on the hovered item, or on the current folder when nothing is hovered.
-7. **Hidden space.** When the scan root is a volume's mount point, the gap between what the volume reports as used (total minus available, as the volumes card shows it) and what the walk found becomes a grey "Hidden space" item under the root: other volumes in the APFS container (Preboot, Recovery, VM), snapshots, purgeable space, and folders the app couldn't read. It can't be revealed or collected. The scan view says how many items couldn't be read, and when the app lacks Full Disk Access, both that bar and the volumes screen offer a button that opens the Full Disk Access pane in System Settings. Purgeable space and snapshots aren't split out yet.
+7. **Unaccounted space.** When the scan root is a volume's mount point, the gap between what the volume reports as used (total minus available, as the volumes card shows it) and what the walk found becomes a grey "Unaccounted space" item under the root: other volumes in the APFS container (Preboot, Recovery, VM), snapshots, purgeable space, and folders the app couldn't read. It can't be revealed or collected. The scan view says how many items couldn't be read, and when the app lacks Full Disk Access, both that bar and the volumes screen offer a button that opens the Full Disk Access pane in System Settings. Purgeable space and snapshots aren't split out yet.
 8. **Settings view.** Opened from the sidebar and with ⌘,. Appearance is Dark, Light or System, and System follows macOS live. The choice is saved in `~/Library/Application Support/com.rlejnieks.spacee/settings.json` and applied before the first frame, so the window never flashes the wrong theme.
 
 Out of scope for v1: duplicate finder, scheduled scans, network volumes, the App Store (sandboxing makes a whole-disk scanner close to impossible there).
@@ -93,13 +93,13 @@ This crate is the best place for unit tests: sweeps sum to 2π per ring, the agg
 
 ```
 main.rs        gpui_kit::application().with_assets(Assets).run(...) → init → open_window
-state.rs       AppState entity: volumes, current Tree, focus stack, hover, collector set
+state.rs       AppState entity: volumes, current Tree, focus stack, hover, Trash tray set
 views/
   volumes.rs   volume list (gpui-kit list + progress bars)
-  scan.rs      main split view: sunburst | side list; breadcrumb on top; collector at bottom
+  scan.rs      main split view: sunburst | side list; breadcrumb on top; Trash tray at bottom
   sunburst.rs  the custom-painted element
   side_list.rs children list (gpui-kit list/table, size bars)
-  collector.rs drop tray + Delete button + confirm dialog
+  trash.rs     drop tray + Delete button + confirm dialog
 platform.rs    trash, reveal, quicklook, FDA check (macOS-only FFI)
 ```
 
@@ -132,8 +132,8 @@ Each milestone ends in something you can run and check.
 | 2 | Static sunburst of a finished scan; hover tooltip | Visual check; `sunburst` unit tests; frame time measured with ~3k arcs |
 | 3 | Zoom in/out with animation, breadcrumb, side list kept in sync | Click through `~/Library` and back without flicker or wrong arcs |
 | 4 | Streaming scan with progress UI and cancel; volumes screen; settings view with Dark / Light / System | Scanning shows live file and byte counts (the growing sunburst moved to milestone 7); cancel stops within ~100 ms; appearance choice survives a relaunch, and System flips live when macOS changes |
-| 5 | Collector + Trash + in-place size update; reveal / Quick Look | Trash a test folder → it appears in Finder's Trash and parent sizes drop by exactly its size |
-| 6 | Boot-volume correctness: firmlinks, hidden space, FDA flow | Scanned total + hidden ≈ `df` used for `/` |
+| 5 | Trash tray + in-place size update; reveal / Quick Look | Trash a test folder → it appears in Finder's Trash and parent sizes drop by exactly its size |
+| 6 | Boot-volume correctness: firmlinks, unaccounted space, FDA flow | Scanned total + unaccounted ≈ `df` used for `/` |
 | 7 | Polish: colors, typography, empty and error states, sunburst that grows during the scan, app icon, `.dmg` | Screenshots reviewed in dark and light |
 | 8 (opt.) | `getattrlistbulk` walker | Benchmark vs. the `readdir` walker on a full home-dir scan, run cold and warm |
 
@@ -151,7 +151,7 @@ Each milestone ends in something you can run and check.
 ## 5. Decisions
 
 1. **Visualization: sunburst.** No treemap.
-2. **Deletion is in v1.** The collector ships in milestone 5. Everything goes through the Trash, never permanent deletion.
+2. **Deletion is in v1.** The Trash tray ships in milestone 5. Everything goes through the Trash, never permanent deletion.
 3. **Distribution: personal use for now, signed with the existing Apple Developer account.** Sign every build from milestone 0, not ad-hoc. macOS ties the Full Disk Access grant to the app's signing identity. An ad-hoc signature changes on every rebuild, so you'd have to grant Full Disk Access again after each `cargo build`. With a stable bundle ID (`com.rlejnieks.spacee`) and team ID, the grant survives rebuilds.
    - Identity: **Apple Development** certificate, team `TEAMID`. The keychain has two certificates with the same name. Sign by SHA-1 hash `-` (the newer one, expires 2027-09-08), not by name, or `codesign` stops on an ambiguous identity.
    - When it's shared, there are two routes:
