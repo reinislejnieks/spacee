@@ -13,6 +13,18 @@ pub fn trash(path: &Path) -> io::Result<()> {
         .map_err(|e| io::Error::other(e.localizedDescription().to_string()))
 }
 
+/// macOS gives no API to ask, so this tries to read a file that only Full Disk Access unlocks.
+pub fn has_full_disk_access() -> bool {
+    std::fs::File::open("/Library/Application Support/com.apple.TCC/TCC.db").is_ok()
+}
+
+pub fn open_full_disk_access_settings() {
+    spawn(
+        Command::new("open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"),
+    );
+}
+
 pub fn reveal(path: &Path) {
     spawn(Command::new("open").arg("-R").arg(path));
 }

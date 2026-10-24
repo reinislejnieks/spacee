@@ -15,10 +15,11 @@ use gpui_kit::component::sidebar::{
     Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
 use gpui_kit::component::{ActiveTheme, IconName, Theme, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::Progress;
 
-use crate::browser::{Browser, format_size};
+use crate::browser::{Browser, format_count, format_size};
 use crate::settings::{Appearance, Settings};
 use crate::volumes::Volume;
 
@@ -48,6 +49,7 @@ struct Spacee {
     page: Page,
     scan: Option<Scan>,
     volumes: Vec<Volume>,
+    full_disk_access: bool,
     settings: Settings,
     _appearance: Subscription,
 }
@@ -62,6 +64,7 @@ impl Spacee {
             page: Page::Volumes,
             scan: None,
             volumes: volumes::list(),
+            full_disk_access: platform::has_full_disk_access(),
             settings,
             _appearance,
         }
@@ -70,6 +73,7 @@ impl Spacee {
     fn show(&mut self, page: Page, cx: &mut Context<Self>) {
         if page == Page::Volumes {
             self.volumes = volumes::list();
+            self.full_disk_access = platform::has_full_disk_access();
         }
         self.page = page;
         cx.notify();
@@ -256,6 +260,28 @@ impl Spacee {
                     .child("Volumes"),
             )
             .children(cards)
+            .when(!self.full_disk_access, |page| {
+                page.child(
+                    h_flex()
+                        .gap_4()
+                        .p_4()
+                        .rounded_lg()
+                        .bg(cx.theme().secondary)
+                        .child(IconName::Info)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .child("Spacee doesn't have Full Disk Access, so macOS hides some folders from it and their space shows up as hidden. After granting it, quit and reopen Spacee."),
+                        )
+                        .child(
+                            Button::new("full-disk-access")
+                                .label("Grant Full Disk Access…")
+                                .on_click(|_, _, _| platform::open_full_disk_access_settings()),
+                        ),
+                )
+            })
             .child(
                 h_flex()
                     .gap_3()
@@ -361,7 +387,7 @@ impl Render for Spacee {
             .text_color(cx.theme().foreground)
             .on_drop(cx.listener(Self::drop_paths))
             .child(self.render_sidebar(cx))
-            .child(div().size_full().child(page))
+            .child(div().size_full().min_w_0().child(page))
     }
 }
 
@@ -372,18 +398,6 @@ fn centered(content: impl IntoElement) -> AnyElement {
         .justify_center()
         .child(content)
         .into_any_element()
-}
-
-fn format_count(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
 }
 
 fn folder_name(path: &Path) -> String {

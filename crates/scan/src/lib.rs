@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::os::macos::fs::MetadataExt as _;
+use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -17,6 +18,10 @@ pub enum Kind {
     File,
     Dir,
     Symlink,
+    /// Space the volume reports as used that no scanned file accounts for: snapshots,
+    /// purgeable space, other volumes in the container, and folders that couldn't be read.
+    /// Only a volume's root gets one, and it has no path on disk.
+    Hidden,
 }
 
 #[derive(Debug)]
@@ -125,12 +130,26 @@ impl Progress {
     }
 }
 
-/// Scans `root` without following symlinks or crossing onto other devices.
-/// Unreadable entries are recorded in [`Tree::errors`] and the scan continues.
+/// Scans `root` without following symlinks or crossing onto other devices or mount points.
+/// Unreadable entries are recorded in [`Tree::errors`] and the scan continues. When `root`
+/// is a volume's mount point, the space the volume uses beyond what the walk found
+/// becomes a [`Kind::Hidden`] child of the root.
 pub fn scan(root: &Path, progress: &Progress) -> io::Result<Tree> {
+    let mut mounts = mount_points();
+    mounts.remove(root);
+    let mut tree = walk(root, mounts, progress)?;
+    if let Some(used) = volume_used(root) {
+        let scanned = tree.node(tree.root).size;
+        tree.add_hidden(used.saturating_sub(scanned));
+    }
+    Ok(tree)
+}
+
+fn walk(root: &Path, mounts: HashSet<PathBuf>, progress: &Progress) -> io::Result<Tree> {
     let meta = fs::symlink_metadata(root)?;
     let walker = Walker {
         dev: meta.dev(),
+        mounts,
         hard_links: Mutex::new(HashSet::new()),
         errors: Mutex::new(vec![]),
         progress,
@@ -155,6 +174,10 @@ const SF_DATALESS: u32 = 0x4000_0000;
 
 struct Walker<'a> {
     dev: u64,
+    /// Mount points below the root. On macOS the boot volume's System and Data volumes
+    /// share a device number, so this, not `dev`, keeps a scan of `/` from walking
+    /// `/System/Volumes/Data` as well as the firmlinks into it.
+    mounts: HashSet<PathBuf>,
     hard_links: Mutex<HashSet<(u64, u64)>>,
     errors: Mutex<Vec<ScanError>>,
     progress: &'a Progress,
@@ -193,7 +216,10 @@ impl Walker<'_> {
                 children: vec![],
             };
         }
-        let children = if meta.dev() == self.dev && meta.st_flags() & SF_DATALESS == 0 {
+        let children = if meta.dev() == self.dev
+            && meta.st_flags() & SF_DATALESS == 0
+            && !self.mounts.contains(path)
+        {
             self.children(path)
         } else {
             vec![]
@@ -264,6 +290,56 @@ impl Walker<'_> {
     fn error(&self, path: PathBuf, error: io::Error) {
         self.errors.lock().unwrap().push(ScanError { path, error });
     }
+}
+
+impl Tree {
+    fn add_hidden(&mut self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let id = NodeId(self.nodes.len() as u32);
+        self.nodes.push(Node {
+            name: "Hidden space".into(),
+            parent: Some(self.root),
+            kind: Kind::Hidden,
+            size: bytes,
+            file_count: 0,
+            children: vec![],
+        });
+        let root = &self.nodes[self.root.0 as usize];
+        let at = root
+            .children
+            .partition_point(|&c| self.node(c).size >= bytes);
+        let root = &mut self.nodes[self.root.0 as usize];
+        root.children.insert(at, id);
+        root.size += bytes;
+    }
+}
+
+fn mount_points() -> HashSet<PathBuf> {
+    let mut mounts: *mut libc::statfs = std::ptr::null_mut();
+    let count = unsafe { libc::getmntinfo(&mut mounts, libc::MNT_NOWAIT) };
+    if count <= 0 {
+        return HashSet::new();
+    }
+    let mounts = unsafe { std::slice::from_raw_parts(mounts, count as usize) };
+    mounts.iter().map(mount_path).collect()
+}
+
+/// Bytes in use on the volume mounted at `path`, counted as total minus available, as
+/// the volumes screen shows it. `None` when `path` isn't a mount point.
+fn volume_used(path: &Path) -> Option<u64> {
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stats: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut stats) } != 0 || mount_path(&stats) != path {
+        return None;
+    }
+    Some((stats.f_blocks - stats.f_bavail) * stats.f_bsize as u64)
+}
+
+fn mount_path(stats: &libc::statfs) -> PathBuf {
+    let name = unsafe { std::ffi::CStr::from_ptr(stats.f_mntonname.as_ptr()) };
+    PathBuf::from(std::ffi::OsStr::from_bytes(name.to_bytes()))
 }
 
 fn flatten(built: Built, parent: Option<NodeId>, nodes: &mut Vec<Node>) -> NodeId {
@@ -461,6 +537,40 @@ mod tests {
         let size = tree.node(tree.root()).size;
         tree.remove(tree.root());
         assert_eq!(tree.node(tree.root()).size, size);
+    }
+
+    #[test]
+    fn mount_points_below_the_root_are_not_entered() {
+        let dir = tempfile::tempdir().unwrap();
+        let mnt = dir.path().join("mnt");
+        fs::create_dir(&mnt).unwrap();
+        write(&mnt.join("inside"), 100_000);
+        write(&dir.path().join("outside"), 10_000);
+
+        let mounts = HashSet::from([mnt.clone()]);
+        let tree = walk(dir.path(), mounts, &Progress::default()).unwrap();
+        let mnt_node = child(&tree, tree.root(), "mnt");
+        assert_eq!((mnt_node.size, mnt_node.children.len()), (blocks(&mnt), 0));
+        assert_eq!(tree.node(tree.root()).file_count, 1);
+    }
+
+    #[test]
+    fn hidden_space_is_added_under_the_root_in_size_order() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join("big"), 500_000);
+        write(&dir.path().join("small"), 5_000);
+        let mut tree = scan(dir.path(), &Progress::default()).unwrap();
+        let before = tree.node(tree.root()).size;
+        let hidden = blocks(&dir.path().join("big")) - 1;
+
+        tree.add_hidden(hidden);
+        tree.add_hidden(0);
+
+        let root = tree.node(tree.root());
+        let names: Vec<_> = root.children.iter().map(|&c| &*tree.node(c).name).collect();
+        assert_eq!(names, ["big", "Hidden space", "small"]);
+        assert_eq!(root.size, before + hidden);
+        assert_eq!(child(&tree, tree.root(), "Hidden space").kind, Kind::Hidden);
     }
 
     fn child_id(tree: &Tree, parent: NodeId, name: &str) -> NodeId {

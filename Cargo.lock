@@ -5491,6 +5491,7 @@ dependencies = [
 name = "scan"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "rayon",
  "tempfile",
 ]

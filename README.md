@@ -6,6 +6,8 @@ Pick a volume or a folder (or drop one onto the window) and Spacee scans it, the
 
 To free space, drag segments or list rows into the collector tray at the bottom, or right-click them and choose Add to Collector, then press Move to Trash. Spacee only ever moves items to the Trash, never deletes them, and updates the sizes in place without a rescan. The right-click menu also has Reveal in Finder, Quick Look and Copy Path, and the space bar opens Quick Look on the hovered item.
 
+Scanning a whole volume adds a grey "Hidden space" item: the space the volume reports as used that no file accounts for, such as snapshots, purgeable space, the other system volumes in the container, and folders Spacee wasn't allowed to read.
+
 The roadmap and design live in [PLAN.md](PLAN.md).
 
 ## Requirements
@@ -46,7 +48,7 @@ cp -R target/release/Spacee.app /Applications/
 
 ### Full Disk Access
 
-Without Full Disk Access, macOS hides parts of `~/Library` and other protected folders, and the totals come out smaller than reality. To grant it, open System Settings → Privacy & Security → Full Disk Access, add `Spacee.app`, and relaunch it.
+Without Full Disk Access, macOS hides parts of `~/Library` and other protected folders, and the totals come out smaller than reality. The volumes screen and the scan view show a Grant Full Disk Access… button while the app lacks it. To grant it, open System Settings → Privacy & Security → Full Disk Access, add `Spacee.app`, and relaunch it.
 
 The grant is tied to the app's signing identity. Builds signed with the same identity keep it; an ad-hoc signed build loses it on every rebuild.
 
@@ -87,6 +89,6 @@ git config core.hooksPath .githooks
 
 The workspace has three crates:
 
-- `crates/scan` walks the filesystem in parallel and builds the size tree. It counts allocated bytes, counts hard links once, and does not follow symlinks or cross onto other volumes.
+- `crates/scan` walks the filesystem in parallel and builds the size tree. It counts allocated bytes, counts hard links once, and does not follow symlinks or cross onto other volumes or mount points.
 - `crates/sunburst` turns the tree into ring geometry, merges slivers into "smaller objects", hit-tests the pointer, and computes zoom animation frames. It has no UI code.
 - `crates/app` is the GPUI app: the window, the painted sunburst, the breadcrumb and the side list.

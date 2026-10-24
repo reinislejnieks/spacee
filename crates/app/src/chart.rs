@@ -43,8 +43,9 @@ pub fn paint(
 
 pub fn color(tree: &Tree, arc: &DrawArc, hovered: bool, dark: bool) -> Hsla {
     let depth = arc.inner;
+    let grey = (0.0, if dark { 0.35 } else { 0.72 });
     let (saturation, lightness) = match arc.target {
-        Target::Smaller { .. } => (0.0, if dark { 0.35 } else { 0.72 }),
+        Target::Smaller { .. } => grey,
         Target::Node(id) => {
             let s = 0.72 - depth * 0.07;
             let l = if dark {
@@ -54,7 +55,8 @@ pub fn color(tree: &Tree, arc: &DrawArc, hovered: bool, dark: bool) -> Hsla {
             };
             match tree.node(id).kind {
                 Kind::Dir => (s, l),
-                _ => (s * 0.45, l),
+                Kind::Hidden => grey,
+                Kind::File | Kind::Symlink => (s * 0.45, l),
             }
         }
     };

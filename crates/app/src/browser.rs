@@ -29,6 +29,7 @@ pub struct Browser {
     /// Items waiting to be moved to the Trash. None is inside another.
     collector: Vec<NodeId>,
     trash_error: Option<String>,
+    full_disk_access: bool,
     focus_handle: FocusHandle,
 }
 
@@ -92,6 +93,7 @@ impl Browser {
             chart_bounds: None,
             collector: vec![],
             trash_error: None,
+            full_disk_access: platform::has_full_disk_access(),
             focus_handle: cx.focus_handle(),
         }
     }
@@ -114,17 +116,21 @@ impl Browser {
         cx.notify();
     }
 
-    /// What the context menu and Quick Look act on: the hovered item, else the focused folder.
+    /// The item on disk that the context menu and Quick Look act on: the hovered item,
+    /// else the focused folder.
     fn subject(&self) -> Option<NodeId> {
         match self.hovered.unwrap_or(Target::Node(self.layout.focus)) {
-            Target::Node(id) => Some(id),
-            Target::Smaller { .. } => None,
+            Target::Node(id) if self.tree.node(id).kind != Kind::Hidden => Some(id),
+            _ => None,
         }
     }
 
     fn collect(&mut self, id: NodeId, cx: &mut Context<Self>) {
         let tree = &self.tree;
-        if id == tree.root() || self.collector.iter().any(|&c| is_within(tree, id, c)) {
+        if id == tree.root()
+            || tree.node(id).kind == Kind::Hidden
+            || self.collector.iter().any(|&c| is_within(tree, id, c))
+        {
             return;
         }
         self.collector.retain(|&c| !is_within(tree, c, id));
@@ -204,7 +210,13 @@ impl Browser {
 
     fn context_menu(&self, menu: PopupMenu, this: Entity<Self>) -> PopupMenu {
         let Some(id) = self.subject() else {
-            return menu.label("Smaller objects");
+            return match self.hovered {
+                Some(Target::Node(_)) => menu
+                    .label("Hidden space")
+                    .label("Snapshots, purgeable space, system volumes,")
+                    .label("and folders Spacee couldn't read"),
+                _ => menu.label("Smaller objects"),
+            };
         };
         let path = self.tree.path(id);
         menu.item(
@@ -327,10 +339,10 @@ impl Browser {
             &self.layout,
             self.hovered.unwrap_or(Target::Node(self.layout.focus)),
         );
-        let dragged = match self.hovered {
-            Some(Target::Node(id)) => Some(Dragged::new(&self.tree, id)),
-            _ => None,
-        };
+        let dragged = self
+            .hovered
+            .and(self.subject())
+            .map(|id| Dragged::new(&self.tree, id));
 
         div()
             .id("chart")
@@ -451,8 +463,10 @@ impl Browser {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| this.focus(id, cx)))
-                    .on_drag(Dragged::new(&self.tree, id), |d, _, _, cx| {
-                        cx.new(|_| d.clone())
+                    .when(node.kind != Kind::Hidden, |row| {
+                        row.on_drag(Dragged::new(&self.tree, id), |d, _, _, cx| {
+                            cx.new(|_| d.clone())
+                        })
                     })
                     .child(
                         h_flex()
@@ -483,6 +497,48 @@ impl Browser {
                     )
             })
             .collect()
+    }
+
+    /// Says how many items the scan couldn't read, and offers Full Disk Access when the
+    /// app doesn't have it.
+    fn render_unreadable(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let count = self.tree.errors.len();
+        if count == 0 {
+            return None;
+        }
+        let items = if count == 1 { "item" } else { "items" };
+        let root = self.tree.node(self.tree.root());
+        let consequence = if root
+            .children
+            .iter()
+            .any(|&c| self.tree.node(c).kind == Kind::Hidden)
+        {
+            "Their space counts as hidden."
+        } else {
+            "They're left out of the totals."
+        };
+        Some(
+            h_flex()
+                .px_4()
+                .py_1p5()
+                .gap_3()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(div().flex_1().child(format!(
+                    "{} {items} couldn't be read. {consequence}",
+                    format_count(count as u64)
+                )))
+                .when(!self.full_disk_access, |bar| {
+                    bar.child(
+                        Button::new("full-disk-access")
+                            .small()
+                            .label("Grant Full Disk Access…")
+                            .on_click(|_, _, _| platform::open_full_disk_access_settings()),
+                    )
+                }),
+        )
     }
 
     fn render_collector(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -588,6 +644,9 @@ impl Render for Browser {
                 }
             }))
             .child(self.render_breadcrumb(cx))
+            .when_some(self.render_unreadable(cx), |this, notice| {
+                this.child(notice)
+            })
             .child(
                 h_flex()
                     .id("content")
@@ -653,6 +712,18 @@ fn describe(tree: &Tree, layout: &Layout, target: Target) -> (String, String) {
             ("Smaller objects".into(), format_size(bytes as u64))
         }
     }
+}
+
+pub fn format_count(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Decimal units, as Finder reports sizes.
