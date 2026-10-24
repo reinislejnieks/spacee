@@ -23,7 +23,7 @@ pub enum Kind {
     /// Space the volume reports as used that no scanned file accounts for: snapshots,
     /// purgeable space, other volumes in the container, and folders that couldn't be read.
     /// Only a volume's root gets one, and it has no path on disk.
-    Hidden,
+    Unaccounted,
 }
 
 #[derive(Debug)]
@@ -197,14 +197,14 @@ impl Progress {
 /// Scans `root` without following symlinks or crossing onto other devices or mount points.
 /// Unreadable entries are recorded in [`Tree::errors`] and the scan continues. When `root`
 /// is a volume's mount point, the space the volume uses beyond what the walk found
-/// becomes a [`Kind::Hidden`] child of the root.
+/// becomes a [`Kind::Unaccounted`] child of the root.
 pub fn scan(root: &Path, progress: &Progress) -> io::Result<Tree> {
     let mut mounts = mount_points();
     mounts.remove(root);
     let mut tree = walk(root, mounts, progress)?;
     if let Some(used) = volume_used(root) {
         let scanned = tree.node(tree.root).size;
-        tree.add_hidden(used.saturating_sub(scanned));
+        tree.add_unaccounted(used.saturating_sub(scanned));
     }
     Ok(tree)
 }
@@ -513,15 +513,15 @@ fn read_u64(buf: &[u8], at: usize) -> u64 {
 }
 
 impl Tree {
-    fn add_hidden(&mut self, bytes: u64) {
+    fn add_unaccounted(&mut self, bytes: u64) {
         if bytes == 0 {
             return;
         }
         let id = NodeId(self.nodes.len() as u32);
         self.nodes.push(Node {
-            name: "Hidden space".into(),
+            name: "Unaccounted space".into(),
             parent: Some(self.root),
-            kind: Kind::Hidden,
+            kind: Kind::Unaccounted,
             size: bytes,
             file_count: 0,
             children: vec![],
@@ -786,22 +786,25 @@ mod tests {
     }
 
     #[test]
-    fn hidden_space_is_added_under_the_root_in_size_order() {
+    fn unaccounted_space_is_added_under_the_root_in_size_order() {
         let dir = tempfile::tempdir().unwrap();
         write(&dir.path().join("big"), 500_000);
         write(&dir.path().join("small"), 5_000);
         let mut tree = scan(dir.path(), &Progress::default()).unwrap();
         let before = tree.node(tree.root()).size;
-        let hidden = blocks(&dir.path().join("big")) - 1;
+        let unaccounted = blocks(&dir.path().join("big")) - 1;
 
-        tree.add_hidden(hidden);
-        tree.add_hidden(0);
+        tree.add_unaccounted(unaccounted);
+        tree.add_unaccounted(0);
 
         let root = tree.node(tree.root());
         let names: Vec<_> = root.children.iter().map(|&c| &*tree.node(c).name).collect();
-        assert_eq!(names, ["big", "Hidden space", "small"]);
-        assert_eq!(root.size, before + hidden);
-        assert_eq!(child(&tree, tree.root(), "Hidden space").kind, Kind::Hidden);
+        assert_eq!(names, ["big", "Unaccounted space", "small"]);
+        assert_eq!(root.size, before + unaccounted);
+        assert_eq!(
+            child(&tree, tree.root(), "Unaccounted space").kind,
+            Kind::Unaccounted
+        );
     }
 
     #[test]

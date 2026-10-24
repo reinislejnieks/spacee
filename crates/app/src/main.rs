@@ -282,7 +282,7 @@ impl Spacee {
                                 .flex_1()
                                 .min_w_0()
                                 .text_sm()
-                                .child("Spacee doesn't have Full Disk Access, so macOS hides some folders from it and their space shows up as hidden. After granting it, quit and reopen Spacee."),
+                                .child("Spacee doesn't have Full Disk Access, so macOS hides some folders from it and their space shows up as unaccounted. After granting it, quit and reopen Spacee."),
                         )
                         .child(
                             Button::new("full-disk-access")

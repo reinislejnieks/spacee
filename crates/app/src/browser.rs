@@ -19,7 +19,7 @@ actions!(browser, [QuickLook]);
 const ZOOM: Duration = Duration::from_millis(350);
 const ROW_HEIGHT: f32 = 44.0;
 
-/// The sunburst, breadcrumb, children list and collector for one finished scan.
+/// The sunburst, breadcrumb, children list and Trash tray for one finished scan.
 pub struct Browser {
     tree: Tree,
     /// What to call the root: the volume's name, such as "Macintosh HD", or the folder's.
@@ -29,13 +29,13 @@ pub struct Browser {
     hovered: Option<Target>,
     chart_bounds: Option<Bounds<Pixels>>,
     /// Items waiting to be moved to the Trash. None is inside another.
-    collector: Vec<NodeId>,
+    marked: Vec<NodeId>,
     trash_error: Option<String>,
     full_disk_access: bool,
     focus_handle: FocusHandle,
 }
 
-/// An item dragged from the chart or the list toward the collector.
+/// An item dragged from the chart or the list toward the Trash tray.
 #[derive(Clone)]
 struct Dragged {
     id: NodeId,
@@ -94,7 +94,7 @@ impl Browser {
             zoom: None,
             hovered: None,
             chart_bounds: None,
-            collector: vec![],
+            marked: vec![],
             trash_error: None,
             full_disk_access: platform::has_full_disk_access(),
             focus_handle: cx.focus_handle(),
@@ -146,37 +146,37 @@ impl Browser {
     /// else the focused folder.
     fn subject(&self) -> Option<NodeId> {
         match self.hovered.unwrap_or(Target::Node(self.layout.focus)) {
-            Target::Node(id) if self.tree.node(id).kind != Kind::Hidden => Some(id),
+            Target::Node(id) if self.tree.node(id).kind != Kind::Unaccounted => Some(id),
             _ => None,
         }
     }
 
-    fn collect(&mut self, id: NodeId, cx: &mut Context<Self>) {
+    fn mark(&mut self, id: NodeId, cx: &mut Context<Self>) {
         let tree = &self.tree;
         if id == tree.root()
-            || tree.node(id).kind == Kind::Hidden
-            || self.collector.iter().any(|&c| is_within(tree, id, c))
+            || tree.node(id).kind == Kind::Unaccounted
+            || self.marked.iter().any(|&c| is_within(tree, id, c))
         {
             return;
         }
-        self.collector.retain(|&c| !is_within(tree, c, id));
-        self.collector.push(id);
+        self.marked.retain(|&c| !is_within(tree, c, id));
+        self.marked.push(id);
         self.trash_error = None;
         cx.notify();
     }
 
-    fn uncollect(&mut self, id: NodeId, cx: &mut Context<Self>) {
-        self.collector.retain(|&c| c != id);
+    fn unmark(&mut self, id: NodeId, cx: &mut Context<Self>) {
+        self.marked.retain(|&c| c != id);
         self.trash_error = None;
         cx.notify();
     }
 
     fn confirm_trash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let message = match &self.collector[..] {
+        let message = match &self.marked[..] {
             [id] => format!("Move “{}” to the Trash?", self.tree.node(*id).name),
             items => format!("Move {} items to the Trash?", items.len()),
         };
-        let size = self.collector.iter().map(|&c| self.tree.node(c).size).sum();
+        let size = self.marked.iter().map(|&c| self.tree.node(c).size).sum();
         let detail = format!("They take {} on disk.", format_size(size));
         let answer = window.prompt(
             PromptLevel::Warning,
@@ -187,19 +187,19 @@ impl Browser {
         );
         cx.spawn(async move |this, cx| {
             if answer.await == Ok(0) {
-                this.update(cx, |this, cx| this.trash_collected(cx)).ok();
+                this.update(cx, |this, cx| this.trash_marked(cx)).ok();
             }
         })
         .detach();
     }
 
-    /// Trashes the collected items and takes them out of the tree. Items that fail stay
-    /// collected, and the first error is shown.
-    fn trash_collected(&mut self, cx: &mut Context<Self>) {
+    /// Trashes the marked items and takes them out of the tree. Items that fail stay
+    /// marked, and the first error is shown.
+    fn trash_marked(&mut self, cx: &mut Context<Self>) {
         let mut focus = self.layout.focus;
         let mut failed = vec![];
         let mut errors = vec![];
-        for id in std::mem::take(&mut self.collector) {
+        for id in std::mem::take(&mut self.marked) {
             match platform::trash(&self.tree.path(id)) {
                 Ok(()) => {
                     if is_within(&self.tree, focus, id) {
@@ -213,7 +213,7 @@ impl Browser {
                 }
             }
         }
-        self.collector = failed;
+        self.marked = failed;
         self.trash_error = match &errors[..] {
             [] => None,
             [e] => Some(format!("Couldn't move to the Trash. {e}")),
@@ -238,7 +238,7 @@ impl Browser {
         let Some(id) = self.subject() else {
             return match self.hovered {
                 Some(Target::Node(_)) => menu
-                    .label("Hidden space")
+                    .label("Unaccounted space")
                     .label("Snapshots, purgeable space, system volumes,")
                     .label("and folders Spacee couldn't read"),
                 _ => menu.label("Smaller objects"),
@@ -272,10 +272,10 @@ impl Browser {
         )
         .separator()
         .item(
-            PopupMenuItem::new("Add to Collector")
+            PopupMenuItem::new("Mark for Trash")
                 .icon(IconName::Delete)
                 .disabled(id == self.tree.root())
-                .on_click(move |_, _, cx| this.update(cx, |this, cx| this.collect(id, cx))),
+                .on_click(move |_, _, cx| this.update(cx, |this, cx| this.mark(id, cx))),
         )
     }
 
@@ -498,7 +498,7 @@ impl Browser {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| this.focus(id, cx)))
-                    .when(node.kind != Kind::Hidden, |row| {
+                    .when(node.kind != Kind::Unaccounted, |row| {
                         row.on_drag(Dragged::new(&self.tree, id), |d, _, _, cx| {
                             cx.new(|_| d.clone())
                         })
@@ -542,14 +542,14 @@ impl Browser {
             return None;
         }
         let root = self.tree.node(self.tree.root());
-        let hidden = root
+        let unaccounted = root
             .children
             .iter()
-            .any(|&c| self.tree.node(c).kind == Kind::Hidden);
-        let (items, consequence) = match (count == 1, hidden) {
-            (true, true) => ("item", "Its space counts as hidden."),
+            .any(|&c| self.tree.node(c).kind == Kind::Unaccounted);
+        let (items, consequence) = match (count == 1, unaccounted) {
+            (true, true) => ("item", "It counts toward Unaccounted space."),
             (true, false) => ("item", "It's left out of the totals."),
-            (false, true) => ("items", "Their space counts as hidden."),
+            (false, true) => ("items", "They count toward Unaccounted space."),
             (false, false) => ("items", "They're left out of the totals."),
         };
         Some(
@@ -576,8 +576,8 @@ impl Browser {
         )
     }
 
-    fn render_collector(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let chips = self.collector.iter().enumerate().map(|(i, &id)| {
+    fn render_marked(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let chips = self.marked.iter().enumerate().map(|(i, &id)| {
             let node = self.tree.node(id);
             h_flex()
                 .flex_none()
@@ -598,22 +598,22 @@ impl Browser {
                         .child(format_size(node.size)),
                 )
                 .child(
-                    Button::new(("uncollect", i))
+                    Button::new(("unmark", i))
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
-                        .on_click(cx.listener(move |this, _, _, cx| this.uncollect(id, cx))),
+                        .on_click(cx.listener(move |this, _, _, cx| this.unmark(id, cx))),
                 )
         });
-        let total = self.collector.iter().map(|&c| self.tree.node(c).size).sum();
+        let total = self.marked.iter().map(|&c| self.tree.node(c).size).sum();
         let hint = div()
             .flex_1()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child("Drag items here, or right-click them, to collect them for the Trash");
+            .child("Drag items here, or right-click them and choose Mark for Trash");
 
         h_flex()
-            .id("collector")
+            .id("marked")
             .flex_none()
             .h(px(52.))
             .px_4()
@@ -621,12 +621,12 @@ impl Browser {
             .border_t_1()
             .border_color(cx.theme().border)
             .drag_over::<Dragged>(|style, _, _, cx| style.bg(cx.theme().accent))
-            .on_drop(cx.listener(|this, d: &Dragged, _, cx| this.collect(d.id, cx)))
+            .on_drop(cx.listener(|this, d: &Dragged, _, cx| this.mark(d.id, cx)))
             .when(
-                self.collector.is_empty() && self.trash_error.is_none(),
+                self.marked.is_empty() && self.trash_error.is_none(),
                 |tray| tray.child(hint),
             )
-            .when(!self.collector.is_empty(), |tray| {
+            .when(!self.marked.is_empty(), |tray| {
                 tray.child(
                     h_flex()
                         .flex_1()
@@ -647,7 +647,7 @@ impl Browser {
                         .child(error),
                 )
             })
-            .when(!self.collector.is_empty(), |tray| {
+            .when(!self.marked.is_empty(), |tray| {
                 tray.child(div().flex_none().text_sm().child(format_size(total)))
                     .child(
                         Button::new("trash")
@@ -726,7 +726,7 @@ impl Render for Browser {
                         this.read(cx).context_menu(menu, this.clone())
                     }),
             )
-            .child(self.render_collector(cx))
+            .child(self.render_marked(cx))
     }
 }
 

@@ -65,7 +65,7 @@ pub fn color(tree: &Tree, arc: &DrawArc, hovered: bool, dark: bool) -> Hsla {
             };
             match tree.node(id).kind {
                 Kind::Dir => (s, l),
-                Kind::Hidden => grey,
+                Kind::Unaccounted => grey,
                 Kind::File | Kind::Symlink => (s * 0.45, l),
             }
         }
