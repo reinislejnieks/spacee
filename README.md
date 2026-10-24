@@ -46,6 +46,14 @@ PROFILE=release scripts/run.sh --no-open
 cp -R target/release/Spacee.app /Applications/
 ```
 
+To build a disk image instead, with an Applications shortcut to drag the app onto:
+
+```sh
+scripts/dmg.sh    # writes target/release/Spacee-<version>.dmg
+```
+
+The image is signed but not notarized, so another Mac's Gatekeeper will refuse it until it's signed with a Developer ID certificate and notarized (see PLAN.md, Decisions).
+
 ### Full Disk Access
 
 Without Full Disk Access, macOS hides parts of `~/Library` and other protected folders, and the totals come out smaller than reality. The volumes screen and the scan view show a Grant Full Disk Access… button while the app lacks it. To grant it, open System Settings → Privacy & Security → Full Disk Access, add `Spacee.app`, and relaunch it.
