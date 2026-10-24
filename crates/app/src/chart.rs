@@ -1,4 +1,4 @@
-use std::f32::consts::PI;
+use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
 use gpui_kit::*;
@@ -26,6 +26,16 @@ pub fn paint(
 ) {
     let start = Instant::now();
     let (center, radius) = geometry(bounds);
+    if arcs.is_empty() {
+        // An empty folder still shows where its chart would be.
+        let (inner, outer) = (layout.radius_at(0.0, radius), layout.radius_at(1.0, radius));
+        let color = hsla(0.0, 0.0, if dark { 0.18 } else { 0.9 }, 1.0);
+        for (a0, a1) in [(0.0, PI), (PI, TAU)] {
+            if let Some(path) = sector(center, inner + GAP, outer - GAP, a0, a1) {
+                window.paint_path(path, color);
+            }
+        }
+    }
     for arc in arcs {
         let inner = layout.radius_at(arc.inner, radius);
         let outer = layout.radius_at(arc.outer, radius);

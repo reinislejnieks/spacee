@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::{Kind, NodeId, Tree};
@@ -413,6 +413,19 @@ impl Browser {
             )
     }
 
+    /// Why the focused folder has nothing to show, if it doesn't.
+    fn empty_message(&self) -> Option<&'static str> {
+        let focus = self.layout.focus;
+        if !self.tree.node(focus).children.is_empty() {
+            return None;
+        }
+        let path = self.tree.path(focus);
+        Some(match self.tree.errors.iter().any(|e| e.path == path) {
+            true => "Spacee wasn't allowed to read this folder.",
+            false => "This folder is empty.",
+        })
+    }
+
     fn render_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut path = vec![];
         let mut node = Some(self.layout.focus);
@@ -528,16 +541,16 @@ impl Browser {
         if count == 0 {
             return None;
         }
-        let items = if count == 1 { "item" } else { "items" };
         let root = self.tree.node(self.tree.root());
-        let consequence = if root
+        let hidden = root
             .children
             .iter()
-            .any(|&c| self.tree.node(c).kind == Kind::Hidden)
-        {
-            "Their space counts as hidden."
-        } else {
-            "They're left out of the totals."
+            .any(|&c| self.tree.node(c).kind == Kind::Hidden);
+        let (items, consequence) = match (count == 1, hidden) {
+            (true, true) => ("item", "Its space counts as hidden."),
+            (true, false) => ("item", "It's left out of the totals."),
+            (false, true) => ("items", "Their space counts as hidden."),
+            (false, false) => ("items", "They're left out of the totals."),
         };
         Some(
             h_flex()
@@ -685,10 +698,29 @@ impl Render for Browser {
                             .border_l_1()
                             .border_color(cx.theme().border)
                             .py_1()
-                            .child(
-                                uniform_list("children", count, cx.processor(Self::render_rows))
+                            .map(|list| match self.empty_message() {
+                                Some(message) => list.child(
+                                    v_flex()
+                                        .size_full()
+                                        .items_center()
+                                        .justify_center()
+                                        .gap_2()
+                                        .px_6()
+                                        .text_sm()
+                                        .text_center()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(Icon::new(IconName::Inbox).size_6())
+                                        .child(message),
+                                ),
+                                None => list.child(
+                                    uniform_list(
+                                        "children",
+                                        count,
+                                        cx.processor(Self::render_rows),
+                                    )
                                     .size_full(),
-                            ),
+                                ),
+                            }),
                     )
                     .context_menu(move |menu, _, cx| {
                         this.read(cx).context_menu(menu, this.clone())

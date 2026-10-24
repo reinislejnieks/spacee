@@ -10,11 +10,12 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::component::Selectable;
 use gpui_kit::component::button::Button;
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::sidebar::{
     Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, Theme, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, Theme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::Progress;
@@ -43,7 +44,10 @@ enum Scan {
         _redraw: Task<()>,
     },
     Done(Entity<Browser>),
-    Failed(String),
+    Failed {
+        name: String,
+        error: String,
+    },
 }
 
 struct Spacee {
@@ -119,13 +123,16 @@ impl Spacee {
         });
         let name = display_name(&path);
         let _task = cx.spawn({
-            let (path, name) = (path.clone(), name.clone());
+            let name = name.clone();
             async move |this, cx| {
                 let result = scan.await;
                 this.update(cx, |this, cx| {
                     this.scan = Some(match result {
                         Ok(tree) => Scan::Done(cx.new(|cx| Browser::new(tree, name, cx))),
-                        Err(e) => Scan::Failed(format!("{}: {e}", path.display())),
+                        Err(e) => Scan::Failed {
+                            name,
+                            error: describe_error(&e),
+                        },
                     });
                     cx.notify();
                 })
@@ -167,7 +174,7 @@ impl Spacee {
             let name = match scan {
                 Scan::Running { name, .. } => name.clone(),
                 Scan::Done(browser) => browser.read(cx).root_name(),
-                Scan::Failed(_) => "Scan failed".into(),
+                Scan::Failed { name, .. } => name.clone(),
             };
             locations = locations.child(
                 SidebarMenuItem::new(name)
@@ -306,7 +313,44 @@ impl Spacee {
         match &self.scan {
             None => self.render_volumes(cx),
             Some(Scan::Done(browser)) => browser.clone().into_any_element(),
-            Some(Scan::Failed(message)) => centered(div().child(message.clone())),
+            Some(Scan::Failed { name, error }) => centered(
+                v_flex()
+                    .items_center()
+                    .gap_3()
+                    .max_w(px(420.))
+                    .child(
+                        Icon::new(IconName::TriangleAlert)
+                            .size_8()
+                            .text_color(cx.theme().muted_foreground),
+                    )
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Couldn't scan {name}")),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_center()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(error.clone()),
+                    )
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .mt_2()
+                            .child(Button::new("back").label("Volumes").on_click(
+                                cx.listener(|this, _, _, cx| this.show(Page::Volumes, cx)),
+                            ))
+                            .child(
+                                Button::new("choose")
+                                    .primary()
+                                    .label("Choose Folder…")
+                                    .on_click(cx.listener(|this, _, _, cx| this.choose_folder(cx))),
+                            ),
+                    ),
+            ),
             Some(Scan::Running { name, progress, .. }) => self.render_running(name, progress, cx),
         }
     }
@@ -462,6 +506,16 @@ impl Render for Spacee {
             .on_drop(cx.listener(Self::drop_paths))
             .child(self.render_sidebar(cx))
             .child(div().size_full().min_w_0().child(page))
+    }
+}
+
+/// The error's message without Rust's " (os error N)" suffix, such as "No such file or
+/// directory".
+fn describe_error(error: &std::io::Error) -> String {
+    let message = error.to_string();
+    match message.rfind(" (os error ") {
+        Some(at) => message[..at].to_string(),
+        None => message,
     }
 }
 
