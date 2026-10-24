@@ -22,6 +22,8 @@ const ROW_HEIGHT: f32 = 44.0;
 /// The sunburst, breadcrumb, children list and collector for one finished scan.
 pub struct Browser {
     tree: Tree,
+    /// What to call the root: the volume's name, such as "Macintosh HD", or the folder's.
+    root_name: String,
     layout: Rc<Layout>,
     zoom: Option<Zoom>,
     hovered: Option<Target>,
@@ -83,10 +85,11 @@ enum Pick {
 }
 
 impl Browser {
-    pub fn new(tree: Tree, cx: &mut Context<Self>) -> Self {
+    pub fn new(tree: Tree, root_name: String, cx: &mut Context<Self>) -> Self {
         let layout = Layout::new(&tree, tree.root(), Options::default());
         Self {
             tree,
+            root_name,
             layout: Rc::new(layout),
             zoom: None,
             hovered: None,
@@ -99,7 +102,30 @@ impl Browser {
     }
 
     pub fn root_name(&self) -> String {
-        display_name(&self.tree, self.tree.root())
+        self.root_name.clone()
+    }
+
+    fn display_name(&self, id: NodeId) -> String {
+        match id == self.tree.root() {
+            true => self.root_name.clone(),
+            false => self.tree.node(id).name.to_string(),
+        }
+    }
+
+    fn describe(&self, target: Target) -> (String, String) {
+        let (tree, layout) = (&self.tree, &self.layout);
+        match target {
+            Target::Node(id) => (self.display_name(id), format_size(tree.node(id).size)),
+            Target::Smaller { .. } => {
+                let sweep = layout
+                    .arcs()
+                    .find(|a| a.target == target)
+                    .map_or(0.0, |a| a.sweep);
+                let focus = tree.node(layout.focus).size;
+                let bytes = (sweep / TAU) as f64 * focus as f64;
+                ("Smaller objects".into(), format_size(bytes as u64))
+            }
+        }
     }
 
     fn focus(&mut self, id: NodeId, cx: &mut Context<Self>) {
@@ -334,11 +360,7 @@ impl Browser {
         let hovered = self.hovered_arc();
         let dark = cx.theme().is_dark();
         let this = cx.entity();
-        let (title, size) = describe(
-            &self.tree,
-            &self.layout,
-            self.hovered.unwrap_or(Target::Node(self.layout.focus)),
-        );
+        let (title, size) = self.describe(self.hovered.unwrap_or(Target::Node(self.layout.focus)));
         let dragged = self
             .hovered
             .and(self.subject())
@@ -399,7 +421,7 @@ impl Browser {
             node = self.tree.node(id).parent;
         }
         let items = path.into_iter().rev().map(|id| {
-            BreadcrumbItem::new(display_name(&self.tree, id))
+            BreadcrumbItem::new(self.display_name(id))
                 .on_click(cx.listener(move |this, _, _, cx| this.focus(id, cx)))
         });
         h_flex()
@@ -686,32 +708,6 @@ fn is_within(tree: &Tree, id: NodeId, ancestor: NodeId) -> bool {
         cur = tree.node(id).parent;
     }
     false
-}
-
-fn display_name(tree: &Tree, id: NodeId) -> String {
-    let node = tree.node(id);
-    match node.parent {
-        Some(_) => node.name.to_string(),
-        None => tree.path(id).file_name().map_or_else(
-            || node.name.to_string(),
-            |n| n.to_string_lossy().into_owned(),
-        ),
-    }
-}
-
-fn describe(tree: &Tree, layout: &Layout, target: Target) -> (String, String) {
-    match target {
-        Target::Node(id) => (display_name(tree, id), format_size(tree.node(id).size)),
-        Target::Smaller { .. } => {
-            let sweep = layout
-                .arcs()
-                .find(|a| a.target == target)
-                .map_or(0.0, |a| a.sweep);
-            let focus = tree.node(layout.focus).size;
-            let bytes = (sweep / TAU) as f64 * focus as f64;
-            ("Smaller objects".into(), format_size(bytes as u64))
-        }
-    }
 }
 
 pub fn format_count(n: u64) -> String {

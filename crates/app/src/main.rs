@@ -37,7 +37,7 @@ enum Page {
 
 enum Scan {
     Running {
-        path: PathBuf,
+        name: String,
         progress: Arc<Progress>,
         _task: Task<()>,
         _redraw: Task<()>,
@@ -117,13 +117,14 @@ impl Spacee {
             let (path, progress) = (path.clone(), progress.clone());
             async move { scan::scan(&path, &progress) }
         });
+        let name = display_name(&path);
         let _task = cx.spawn({
-            let path = path.clone();
+            let (path, name) = (path.clone(), name.clone());
             async move |this, cx| {
                 let result = scan.await;
                 this.update(cx, |this, cx| {
                     this.scan = Some(match result {
-                        Ok(tree) => Scan::Done(cx.new(|cx| Browser::new(tree, cx))),
+                        Ok(tree) => Scan::Done(cx.new(|cx| Browser::new(tree, name, cx))),
                         Err(e) => Scan::Failed(format!("{}: {e}", path.display())),
                     });
                     cx.notify();
@@ -140,7 +141,7 @@ impl Spacee {
             }
         });
         self.scan = Some(Scan::Running {
-            path,
+            name,
             progress,
             _task,
             _redraw,
@@ -164,7 +165,7 @@ impl Spacee {
         );
         if let Some(scan) = &self.scan {
             let name = match scan {
-                Scan::Running { path, .. } => folder_name(path),
+                Scan::Running { name, .. } => name.clone(),
                 Scan::Done(browser) => browser.read(cx).root_name(),
                 Scan::Failed(_) => "Scan failed".into(),
             };
@@ -306,14 +307,14 @@ impl Spacee {
             None => self.render_volumes(cx),
             Some(Scan::Done(browser)) => browser.clone().into_any_element(),
             Some(Scan::Failed(message)) => centered(div().child(message.clone())),
-            Some(Scan::Running { path, progress, .. }) => self.render_running(path, progress, cx),
+            Some(Scan::Running { name, progress, .. }) => self.render_running(name, progress, cx),
         }
     }
 
     /// The folders found so far as a sunburst that grows while the scan runs.
     fn render_running(
         &self,
-        path: &Path,
+        name: &str,
         progress: &Progress,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -365,7 +366,7 @@ impl Spacee {
                                         div()
                                             .text_sm()
                                             .truncate()
-                                            .child(format!("Scanning {}", folder_name(path))),
+                                            .child(format!("Scanning {name}")),
                                     )
                                     .child(
                                         div()
@@ -473,7 +474,12 @@ fn centered(content: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-fn folder_name(path: &Path) -> String {
+/// The volume's name, such as "Macintosh HD", when `path` is where one is mounted, else
+/// the folder's name.
+fn display_name(path: &Path) -> String {
+    if let Some(volume) = volumes::list().into_iter().find(|v| v.mount == path) {
+        return volume.name;
+    }
     path.file_name().map_or_else(
         || path.display().to_string(),
         |n| n.to_string_lossy().into_owned(),
