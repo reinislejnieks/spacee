@@ -215,6 +215,7 @@ pub fn kbd(text: &'static str, p: &Palette) -> Div {
 pub enum Button {
     Normal,
     Primary,
+    Ghost,
 }
 
 /// A button to fill with an icon and a label. Make it smaller with padding and text size.
@@ -251,6 +252,12 @@ pub fn button(id: impl Into<ElementId>, kind: Button, p: &Palette) -> Stateful<D
                     inset: false,
                 }])
                 .hover(move |s| s.bg(mint.blend(white().opacity(0.08))))
+        }
+        Button::Ghost => {
+            let fg = p.fg;
+            base.border_color(transparent_black())
+                .text_color(p.dim)
+                .hover(move |s| s.bg(wash.opacity(0.05)).text_color(fg))
         }
     }
 }

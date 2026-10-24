@@ -1,12 +1,12 @@
 use std::collections::HashSet;
+use std::f32::consts::TAU;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::assets::IconName as AppIcon;
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
-use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Icon, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::{FileType, Kind, NodeId, Tree};
@@ -14,11 +14,13 @@ use sunburst::{DrawArc, Layout, Options, Target};
 
 use crate::chart::{self, Spot};
 use crate::platform;
+use crate::style::{self, MONO, Palette, Tone};
 
-actions!(browser, [QuickLook]);
+actions!(browser, [GoUp, QuickLook]);
 
 const ZOOM: Duration = Duration::from_millis(350);
-const ROW_HEIGHT: f32 = 44.0;
+/// A row of the children list, with the gap below it.
+const ROW_HEIGHT: f32 = 70.0;
 
 /// The sunburst, breadcrumb, children list and Trash tray for one finished scan.
 pub struct Browser {
@@ -56,19 +58,23 @@ impl Dragged {
 
 impl Render for Dragged {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = Palette::of(cx);
         h_flex()
-            .gap_2()
-            .px_2()
-            .py_1()
-            .rounded_md()
+            .gap(px(9.))
+            .px(px(11.))
+            .py(px(5.))
+            .rounded(px(9.))
             .border_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().popover)
-            .text_sm()
+            .border_color(p.line_strong)
+            .bg(style::gradient(p.raised))
+            .text_color(p.fg)
+            .text_size(px(13.))
             .child(self.name.clone())
             .child(
                 div()
-                    .text_color(cx.theme().muted_foreground)
+                    .font_family(MONO)
+                    .text_size(px(11.5))
+                    .text_color(p.mint)
                     .child(format_size(self.size)),
             )
     }
@@ -163,6 +169,12 @@ impl Browser {
 
     fn unmark(&mut self, id: NodeId, cx: &mut Context<Self>) {
         self.marked.retain(|&c| c != id);
+        self.trash_error = None;
+        cx.notify();
+    }
+
+    fn clear_marked(&mut self, cx: &mut Context<Self>) {
+        self.marked.clear();
         self.trash_error = None;
         cx.notify();
     }
@@ -349,10 +361,10 @@ impl Browser {
         }
     }
 
-    fn render_chart(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_chart(&mut self, p: &Palette, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let arcs = self.frame(window);
         let hovered = self.hovered_arc();
-        let dark = cx.theme().is_dark();
+        let dark = p.dark;
         let this = cx.entity();
         let dragged = self
             .hovered
@@ -386,38 +398,57 @@ impl Browser {
             .filter(|t| types.contains(t))
             .map(|t| {
                 h_flex()
-                    .gap_1p5()
-                    .child(div().size_2().rounded_full().bg(chart::swatch(t, dark)))
+                    .gap(px(7.))
+                    .child(style::dot(chart::swatch(t, dark), px(9.)))
                     .child(t.label())
             });
 
-        v_flex()
-            .id("chart")
-            .flex_1()
-            .min_w(px(240.))
-            .h_full()
-            .on_mouse_move(cx.listener(Self::mouse_move))
-            .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
-            .when_some(dragged, |chart, dragged| {
-                chart.on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
-            })
+        style::card(p)
+            .flex()
+            .flex_col()
+            .p(px(14.))
+            .pb_3()
+            .child(
+                h_flex()
+                    .pb_3()
+                    .justify_between()
+                    .gap_3()
+                    .child(style::caption("Icicle", p))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(MONO)
+                            .text_size(px(11.5))
+                            .text_color(p.faint)
+                            .child("Click to zoom · Esc to go up"),
+                    ),
+            )
             .child(
                 div()
+                    .id("chart")
                     .relative()
                     .flex_1()
                     .min_h_0()
                     .w_full()
+                    .on_mouse_move(cx.listener(Self::mouse_move))
+                    .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+                    .when_some(dragged, |chart, dragged| {
+                        chart.on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
+                    })
                     .child(
                         canvas(
                             {
                                 let this = this.clone();
-                                move |bounds, _, cx| {
-                                    this.update(cx, |this, cx| {
-                                        if this.chart_bounds != Some(bounds) {
-                                            this.chart_bounds = Some(bounds);
-                                            cx.notify();
-                                        }
-                                    })
+                                move |bounds, window, cx| {
+                                    let moved = this.update(cx, |this, _| {
+                                        this.chart_bounds.replace(bounds) != Some(bounds)
+                                    });
+                                    // A notify while painting is lost; render again next
+                                    // frame so the labels follow.
+                                    if moved {
+                                        window.request_animation_frame();
+                                    }
                                 }
                             },
                             move |bounds, _, window, cx| {
@@ -435,11 +466,11 @@ impl Browser {
                 h_flex()
                     .flex_none()
                     .flex_wrap()
-                    .gap_x_4()
-                    .gap_y_1()
+                    .gap_x(px(18.))
+                    .gap_y_1p5()
                     .pt_3()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
+                    .text_size(px(12.5))
+                    .text_color(p.caption)
                     .children(legend),
             )
     }
@@ -476,24 +507,170 @@ impl Browser {
         })
     }
 
-    fn render_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// The bytes `target` takes, working out the merged "smaller objects" from its arc.
+    fn size_of(&self, target: Target) -> u64 {
+        match target {
+            Target::Node(id) => self.tree.node(id).size,
+            Target::Smaller { .. } => {
+                let sweep = self
+                    .layout
+                    .arcs()
+                    .find(|a| a.target == target)
+                    .map_or(0.0, |a| a.sweep);
+                let focus = self.tree.node(self.layout.focus).size;
+                ((sweep / TAU) as f64 * focus as f64) as u64
+            }
+        }
+    }
+
+    fn render_breadcrumb(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let focus = self.layout.focus;
         let mut path = vec![];
-        let mut node = Some(self.layout.focus);
+        let mut node = Some(focus);
         while let Some(id) = node {
             path.push(id);
             node = self.tree.node(id).parent;
         }
-        let items = path.into_iter().rev().map(|id| {
-            BreadcrumbItem::new(self.display_name(id))
-                .on_click(cx.listener(move |this, _, _, cx| this.focus(id, cx)))
-        });
-        h_flex()
-            .px_4()
-            .py_2()
-            .overflow_x_hidden()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .child(Breadcrumb::new().children(items))
+        path.reverse();
+        let mut crumbs = vec![];
+        for (i, &id) in path.iter().enumerate() {
+            if i > 0 {
+                crumbs.push(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(p.faint)
+                        .child("›")
+                        .into_any_element(),
+                );
+            }
+            let current = id == focus;
+            let icon: Option<IconName> = match (i, current) {
+                (0, _) => Some(IconName::HardDrive),
+                (_, true) => Some(IconName::Folder),
+                _ => None,
+            };
+            let (wash, fg) = (p.wash, p.fg);
+            crumbs.push(
+                h_flex()
+                    .id(("crumb", i))
+                    .flex_none()
+                    .gap(px(7.))
+                    .px(px(9.))
+                    .py(px(5.))
+                    .rounded(px(7.))
+                    .border_1()
+                    .border_color(transparent_black())
+                    .text_color(p.caption)
+                    .cursor_pointer()
+                    .when_else(
+                        current,
+                        |crumb| {
+                            crumb
+                                .bg(p.mint.opacity(0.09))
+                                .border_color(p.mint.opacity(0.2))
+                                .text_color(p.mint)
+                                .font_weight(FontWeight::MEDIUM)
+                        },
+                        |crumb| crumb.hover(move |s| s.bg(wash.opacity(0.04)).text_color(fg)),
+                    )
+                    .when_some(icon, |crumb, icon| crumb.child(Icon::new(icon).size_4()))
+                    .child(
+                        div()
+                            .max_w(px(220.))
+                            .truncate()
+                            .child(self.display_name(id)),
+                    )
+                    .when(current && i > 0, |crumb| {
+                        crumb.child(style::tag(
+                            format_size(self.tree.node(id).size),
+                            Tone::Mint,
+                            p,
+                        ))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.focus(id, cx)))
+                    .into_any_element(),
+            );
+        }
+
+        let shown = self.hovered.unwrap_or(Target::Node(focus));
+        let (color, name, files) = match shown {
+            Target::Node(id) if id == focus => (
+                p.mint,
+                self.display_name(id),
+                Some(self.tree.node(id).file_count),
+            ),
+            Target::Node(id) => {
+                let node = self.tree.node(id);
+                let files = (node.kind == Kind::Dir).then_some(node.file_count);
+                (
+                    chart::node_color(&self.tree, id, p.dark),
+                    self.display_name(id),
+                    files,
+                )
+            }
+            Target::Smaller { .. } => (
+                chart::color(&self.tree, shown, p.dark),
+                "Smaller objects".into(),
+                None,
+            ),
+        };
+        let bytes = self.size_of(shown);
+        let percent = (shown != Target::Node(focus))
+            .then(|| bytes as f64 / self.tree.node(focus).size.max(1) as f64 * 100.0);
+        let separator = || div().text_color(p.faint).child("·");
+        let pill = h_flex()
+            .flex_none()
+            .max_w(relative(0.6))
+            .ml_auto()
+            .gap(px(9.))
+            .px_3()
+            .py(px(6.))
+            .rounded_full()
+            .border_1()
+            .border_color(p.line)
+            .bg(p.inset)
+            .text_size(px(12.))
+            .overflow_hidden()
+            .child(style::dot(color, px(7.)))
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name.to_uppercase()),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap(px(9.))
+                    .font_family(MONO)
+                    .text_color(p.dim)
+                    .child(separator())
+                    .child(
+                        div()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(p.mint)
+                            .child(format_size(bytes)),
+                    )
+                    .when_some(files, |values, files| {
+                        values.child(separator()).child(format_files(files))
+                    })
+                    .when_some(percent, |values, percent| {
+                        values.child(separator()).child(format!("{percent:.1}%"))
+                    }),
+            );
+
+        style::card(p)
+            .flex_none()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .px_3()
+            .py(px(9.))
+            .min_h(px(56.))
+            .children(crumbs)
+            .child(pill)
     }
 
     fn render_rows(
@@ -502,27 +679,41 @@ impl Browser {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<Stateful<Div>> {
+        let p = Palette::of(cx);
         let focus = self.tree.node(self.layout.focus);
-        let dark = cx.theme().is_dark();
         range
             .map(|i| {
                 let id = focus.children[i];
                 let node = self.tree.node(id);
                 let target = Target::Node(id);
-                let swatch = chart::node_color(&self.tree, id, dark);
+                let color = chart::node_color(&self.tree, id, p.dark);
                 let fraction = node.size as f32 / focus.size.max(1) as f32;
                 let hovered = self.hovered == Some(target);
+                let (icon, detail): (Icon, String) = match node.kind {
+                    Kind::Dir => (
+                        IconName::Folder.into(),
+                        format!(
+                            "{} · {}",
+                            format_files(node.file_count),
+                            node.file_type.label().to_lowercase()
+                        ),
+                    ),
+                    Kind::Unaccounted => (
+                        AppIcon::CircleDashed.into(),
+                        "not visible to the scan".into(),
+                    ),
+                    Kind::File | Kind::Symlink => {
+                        (IconName::File.into(), node.file_type.label().to_lowercase())
+                    }
+                };
+                let unaccounted = node.kind == Kind::Unaccounted;
+                let (wash, line_strong) = (p.wash, p.line_strong);
 
                 div()
                     .id(("row", i))
                     .w_full()
                     .h(px(ROW_HEIGHT))
-                    .px_3()
-                    .flex()
-                    .flex_col()
-                    .justify_center()
-                    .gap_1()
-                    .when(hovered, |row| row.bg(cx.theme().accent))
+                    .pb(px(6.))
                     .on_hover(cx.listener(move |this, hovering: &bool, _, cx| {
                         if *hovering {
                             this.set_hovered(Some(target), cx);
@@ -531,45 +722,220 @@ impl Browser {
                         }
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| this.focus(id, cx)))
-                    .when(node.kind != Kind::Unaccounted, |row| {
+                    .when(!unaccounted, |row| {
                         row.on_drag(Dragged::new(&self.tree, id), |d, _, _, cx| {
                             cx.new(|_| d.clone())
                         })
                     })
                     .child(
                         h_flex()
-                            .gap_2()
-                            .text_sm()
-                            .child(div().size_2p5().rounded_full().flex_none().bg(swatch))
-                            .child(div().flex_1().truncate().child(node.name.to_string()))
+                            .size_full()
+                            .gap_3()
+                            .px(px(11.))
+                            .rounded(px(11.))
+                            .border_1()
+                            .border_color(transparent_black())
+                            .bg(wash.opacity(0.016))
+                            .cursor_pointer()
+                            .when(hovered, |row| {
+                                row.bg(wash.opacity(0.035)).border_color(line_strong)
+                            })
+                            .child(style::tile(icon, color, px(34.), &p))
                             .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format_size(node.size)),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .h(px(3.))
-                            .w_full()
-                            .rounded_full()
-                            .bg(cx.theme().muted)
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(fraction))
-                                    .rounded_full()
-                                    .bg(swatch),
+                                v_flex()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .gap(px(2.))
+                                    .child(
+                                        h_flex()
+                                            .gap_3()
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .when(unaccounted, |name| {
+                                                        name.text_color(p.dim)
+                                                    })
+                                                    .child(node.name.to_string()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .font_family(MONO)
+                                                    .text_size(px(13.))
+                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                    .child(format_size(node.size)),
+                                            ),
+                                    )
+                                    .child(
+                                        h_flex()
+                                            .gap_3()
+                                            .font_family(MONO)
+                                            .text_size(px(11.5))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .truncate()
+                                                    .text_color(p.faint)
+                                                    .child(detail),
+                                            )
+                                            .child(
+                                                div()
+                                                    .flex_none()
+                                                    .text_color(color)
+                                                    .child(format!("{:.1}%", fraction * 100.0)),
+                                            ),
+                                    )
+                                    .child(div().pt_1().child(style::bar(
+                                        fraction,
+                                        color,
+                                        px(4.),
+                                        &p,
+                                    ))),
                             ),
                     )
             })
             .collect()
     }
 
+    fn render_list(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
+        let focus = self.layout.focus;
+        let count = self.tree.node(focus).children.len();
+        style::card(p)
+            .flex()
+            .flex_col()
+            .px_3()
+            .pt(px(14.))
+            .pb(px(10.))
+            .child(
+                h_flex()
+                    .px_1()
+                    .pb_3()
+                    .gap_2()
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(16.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(format!("Children of {}", self.display_name(focus))),
+                    )
+                    .child(style::tag(format_count(count as u64), Tone::Neutral, p))
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .flex_none()
+                            .font_family(MONO)
+                            .text_size(px(11.5))
+                            .text_color(p.faint)
+                            .child("By size ↓"),
+                    ),
+            )
+            .child(match self.empty_message() {
+                Some(message) => v_flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .gap_2()
+                    .px_6()
+                    .text_size(px(13.))
+                    .text_center()
+                    .text_color(p.dim)
+                    .child(Icon::new(IconName::Inbox).size_6())
+                    .child(message)
+                    .into_any_element(),
+                None => uniform_list("children", count, cx.processor(Self::render_rows))
+                    .flex_1()
+                    .min_h_0()
+                    .into_any_element(),
+            })
+    }
+
+    fn render_stats(&self, p: &Palette) -> Div {
+        let focus = self.tree.node(self.layout.focus);
+        let stat = |label: &'static str, value: String, color: Hsla, detail: String| {
+            style::card(p)
+                .min_w_0()
+                .px(px(14.))
+                .py_3()
+                .child(
+                    div()
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .text_color(p.dim)
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .mt_1()
+                        .truncate()
+                        .text_size(px(22.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(color)
+                        .child(value),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .text_color(p.faint)
+                        .child(detail),
+                )
+        };
+        let largest = focus
+            .children
+            .iter()
+            .copied()
+            .find(|&c| self.tree.node(c).kind != Kind::Unaccounted);
+        let marked: u64 = self.marked.iter().map(|&c| self.tree.node(c).size).sum();
+        let count = self.marked.len();
+        div()
+            .flex_none()
+            .grid()
+            .grid_cols(3)
+            .gap_3()
+            .child(stat(
+                "This folder",
+                format_size(focus.size),
+                p.fg,
+                format_files(focus.file_count),
+            ))
+            .child(match largest {
+                Some(id) => {
+                    let node = self.tree.node(id);
+                    stat(
+                        "Largest inside",
+                        format_size(node.size),
+                        chart::node_color(&self.tree, id, p.dark),
+                        format!(
+                            "{} · {:.0}%",
+                            node.name,
+                            node.size as f64 / focus.size.max(1) as f64 * 100.0
+                        ),
+                    )
+                }
+                None => stat(
+                    "Largest inside",
+                    "—".into(),
+                    p.faint,
+                    "Nothing inside".into(),
+                ),
+            })
+            .child(stat(
+                "Marked for trash",
+                format_size(marked),
+                if count > 0 { p.mint } else { p.faint },
+                format!("{count} {}", if count == 1 { "item" } else { "items" }),
+            ))
+    }
+
     /// Says how many items the scan couldn't read, and offers Full Disk Access when the
     /// app doesn't have it.
-    fn render_unreadable(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    fn render_unreadable(&self, p: &Palette) -> Option<Div> {
         let count = self.tree.errors.len();
         if count == 0 {
             return None;
@@ -585,184 +951,240 @@ impl Browser {
             (false, true) => ("items", "They count toward Unaccounted space."),
             (false, false) => ("items", "They're left out of the totals."),
         };
-        Some(
-            h_flex()
-                .px_4()
-                .py_1p5()
-                .gap_3()
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child(div().flex_1().min_w_0().child(format!(
-                    "{} {items} couldn't be read. {consequence}",
-                    format_count(count as u64)
-                )))
-                .when(!self.full_disk_access, |bar| {
-                    bar.child(
-                        Button::new("full-disk-access")
-                            .small()
-                            .label("Grant Full Disk Access…")
-                            .on_click(|_, _, _| platform::open_full_disk_access_settings()),
-                    )
-                }),
-        )
+        Some(crate::notice(
+            format!("{} {items} couldn't be read", format_count(count as u64)).into(),
+            format!("macOS keeps some folders private. {consequence}").into(),
+            !self.full_disk_access,
+            p,
+        ))
     }
 
-    fn render_marked(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_marked(&self, p: &Palette, cx: &mut Context<Self>) -> Stateful<Div> {
         let chips = self.marked.iter().enumerate().map(|(i, &id)| {
             let node = self.tree.node(id);
+            let icon: IconName = match node.kind {
+                Kind::Dir => IconName::Folder,
+                _ => IconName::File,
+            };
+            let (wash, fg) = (p.wash, p.fg);
             h_flex()
                 .flex_none()
-                .gap_1()
-                .pl_2()
-                .rounded_md()
-                .bg(cx.theme().secondary)
-                .text_sm()
+                .gap(px(9.))
+                .pl(px(11.))
+                .pr(px(6.))
+                .py(px(5.))
+                .rounded(px(9.))
+                .border_1()
+                .border_color(p.line_strong)
+                .bg(p.wash.opacity(0.03))
+                .text_size(px(13.))
+                .child(
+                    Icon::new(icon)
+                        .size_4()
+                        .text_color(chart::node_color(&self.tree, id, p.dark)),
+                )
                 .child(
                     div()
-                        .max_w(px(160.))
+                        .max_w(px(200.))
                         .truncate()
                         .child(node.name.to_string()),
                 )
                 .child(
                     div()
-                        .text_color(cx.theme().muted_foreground)
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .text_color(p.mint)
                         .child(format_size(node.size)),
                 )
                 .child(
-                    Button::new(("unmark", i))
-                        .ghost()
-                        .xsmall()
-                        .icon(IconName::Close)
+                    div()
+                        .id(("unmark", i))
+                        .px_1()
+                        .rounded(px(4.))
+                        .text_color(p.faint)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(wash.opacity(0.06)).text_color(fg))
+                        .child(Icon::new(IconName::Close).size_3p5())
                         .on_click(cx.listener(move |this, _, _, cx| this.unmark(id, cx))),
                 )
         });
-        let total = self.marked.iter().map(|&c| self.tree.node(c).size).sum();
-        let hint = div()
-            .flex_1()
-            .min_w_0()
-            .truncate()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child("Drag items here, or right-click them and choose Mark for Trash");
+        let total: u64 = self.marked.iter().map(|&c| self.tree.node(c).size).sum();
+        let count = self.marked.len();
+        let mint = p.mint;
+        let over = (
+            p.card.0.blend(mint.opacity(0.08)),
+            p.card.1.blend(mint.opacity(0.05)),
+        );
 
-        h_flex()
+        style::card(p)
             .id("marked")
             .flex_none()
-            .h(px(52.))
-            .px_4()
+            .flex()
+            .flex_col()
             .gap_3()
-            .border_t_1()
-            .border_color(cx.theme().border)
-            .drag_over::<Dragged>(|style, _, _, cx| style.bg(cx.theme().accent))
-            .on_drop(cx.listener(|this, d: &Dragged, _, cx| this.mark(d.id, cx)))
-            .when(
-                self.marked.is_empty() && self.trash_error.is_none(),
-                |tray| tray.child(hint),
-            )
-            .when(!self.marked.is_empty(), |tray| {
-                tray.child(
-                    h_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_2()
-                        .overflow_x_hidden()
-                        .children(chips),
-                )
+            .px_4()
+            .py(px(14.))
+            .drag_over::<Dragged>(move |style, _, _, _| {
+                style.border_color(mint).bg(style::gradient(over))
             })
+            .on_drop(cx.listener(|this, d: &Dragged, _, cx| this.mark(d.id, cx)))
+            .child(
+                h_flex()
+                    .gap_4()
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_3()
+                            .child(style::tile(AppIcon::Trash, p.red, px(36.), p))
+                            .child(
+                                v_flex()
+                                    .min_w_0()
+                                    .gap_0p5()
+                                    .child(style::caption("Trash tray", p))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_size(px(13.))
+                                            .text_color(p.dim)
+                                            .child(match count {
+                                                0 => "Drag items here, or right-click them and choose Mark for Trash.",
+                                                _ => "Items go to the macOS Trash, never deleted outright.",
+                                            }),
+                                    ),
+                            ),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_none()
+                            .gap_1()
+                            .font_family(MONO)
+                            .text_size(px(12.))
+                            .text_color(p.dim)
+                            .map(|sum| match count {
+                                0 => sum.child("Nothing marked"),
+                                _ => sum
+                                    .child(format!(
+                                        "{count} {} ·",
+                                        if count == 1 { "ITEM" } else { "ITEMS" }
+                                    ))
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(p.mint)
+                                            .child(format_size(total)),
+                                    ),
+                            }),
+                    ),
+            )
             .when_some(self.trash_error.clone(), |tray, error| {
                 tray.child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
+                        .text_size(px(13.))
+                        .text_color(p.red)
                         .child(error),
                 )
             })
-            .when(!self.marked.is_empty(), |tray| {
-                tray.child(div().flex_none().text_sm().child(format_size(total)))
-                    .child(
-                        Button::new("trash")
-                            .danger()
-                            .small()
-                            .icon(IconName::Delete)
-                            .label("Move to Trash")
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.confirm_trash(window, cx)),
-                            ),
-                    )
+            .when(count > 0, |tray| {
+                tray.child(
+                    h_flex()
+                        .flex_wrap()
+                        .items_end()
+                        .gap_3()
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_w(px(200.))
+                                .flex_wrap()
+                                .gap_2()
+                                .children(chips),
+                        )
+                        .child(
+                            h_flex()
+                                .flex_none()
+                                .gap_2()
+                                .ml_auto()
+                                .child(
+                                    style::button("clear", style::Button::Ghost, p)
+                                        .child("Clear")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.clear_marked(cx)),
+                                        ),
+                                )
+                                .child(
+                                    style::button("trash", style::Button::Primary, p)
+                                        .child(Icon::new(AppIcon::Trash).size_4())
+                                        .child(format!("Move to Trash ({})", format_size(total)))
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.confirm_trash(window, cx)
+                                        })),
+                                ),
+                        ),
+                )
             })
     }
 }
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let count = self.tree.node(self.layout.focus).children.len();
+        let p = Palette::of(cx);
+        let narrow = window.viewport_size().width < px(980.);
         let this = cx.entity();
+        let chart = self.render_chart(&p, window, cx);
+        let stats = self.render_stats(&p);
+        let list = self.render_list(&p, cx);
+        let content = match narrow {
+            // The page scrolls, so the chart and the list each get a fixed height.
+            true => v_flex()
+                .id("content")
+                .flex_none()
+                .gap(px(14.))
+                .child(chart.h(px(460.)))
+                .child(stats)
+                .child(list.h(px(360.))),
+            false => h_flex()
+                .id("content")
+                .flex_1()
+                .min_h_0()
+                .items_stretch()
+                .gap(px(14.))
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(px(14.))
+                        .child(chart.flex_1().min_h_0())
+                        .child(stats),
+                )
+                .child(list.w(px(340.)).flex_none()),
+        };
+
         v_flex()
+            .id("browser")
             .size_full()
             .key_context("Browser")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::quick_look))
-            // Hovering is enough to aim the space bar, so take focus without a click.
+            .on_action(cx.listener(|this, _: &GoUp, _, cx| this.focus_parent(cx)))
+            // Hovering is enough to aim the keyboard, so take focus without a click.
             .on_mouse_move(cx.listener(|this, _, window, cx| {
                 if !this.focus_handle.is_focused(window) {
                     window.focus(&this.focus_handle, cx);
                 }
             }))
-            .child(self.render_breadcrumb(cx))
-            .when_some(self.render_unreadable(cx), |this, notice| {
-                this.child(notice)
-            })
+            .px_5()
+            .pt(px(18.))
+            .pb_5()
+            .gap(px(14.))
+            .when(narrow, |page| page.overflow_y_scroll())
+            .child(self.render_breadcrumb(&p, cx))
+            .children(self.render_unreadable(&p))
             .child(
-                h_flex()
-                    .id("content")
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .items_start()
-                    .child(self.render_chart(window, cx))
-                    .child(
-                        div()
-                            .w(relative(0.38))
-                            .min_w(px(220.))
-                            .max_w(px(320.))
-                            .h_full()
-                            .border_l_1()
-                            .border_color(cx.theme().border)
-                            .py_1()
-                            .map(|list| match self.empty_message() {
-                                Some(message) => list.child(
-                                    v_flex()
-                                        .size_full()
-                                        .items_center()
-                                        .justify_center()
-                                        .gap_2()
-                                        .px_6()
-                                        .text_sm()
-                                        .text_center()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(Icon::new(IconName::Inbox).size_6())
-                                        .child(message),
-                                ),
-                                None => list.child(
-                                    uniform_list(
-                                        "children",
-                                        count,
-                                        cx.processor(Self::render_rows),
-                                    )
-                                    .size_full(),
-                                ),
-                            }),
-                    )
-                    .context_menu(move |menu, _, cx| {
-                        this.read(cx).context_menu(menu, this.clone())
-                    }),
+                content.context_menu(move |menu, _, cx| {
+                    this.read(cx).context_menu(menu, this.clone())
+                }),
             )
-            .child(self.render_marked(cx))
+            .child(self.render_marked(&p, cx))
     }
 }
 

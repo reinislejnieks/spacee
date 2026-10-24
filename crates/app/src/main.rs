@@ -352,8 +352,8 @@ impl Spacee {
             .iter()
             .position(|v| v.kind == volumes::Kind::Startup)
             .map(|i| self.render_startup(i, p, cx));
-        // Cards at least 300px wide, as many to a row as fit.
-        let columns = ((width.as_f32() - 40.0 + 12.0) / (300.0 + 12.0)).max(1.0) as u16;
+        // Cards at least 330px wide, as many to a row as fit.
+        let columns = ((width.as_f32() - 40.0 + 12.0) / (330.0 + 12.0)).max(1.0) as u16;
         let mut sections = vec![];
         for group in volumes::Group::ALL {
             let cards: Vec<_> = (0..self.volumes.len())
@@ -407,9 +407,10 @@ impl Spacee {
             )
             .children(startup)
             .when(!self.full_disk_access, |page| {
-                page.child(full_disk_access_notice(
+                page.child(notice(
                     "Spacee doesn't have Full Disk Access".into(),
-                    "macOS hides some folders from it, so their space shows up as unaccounted. After granting it, quit and reopen Spacee.",
+                    "macOS hides some folders from it, so their space shows up as unaccounted. After granting it, quit and reopen Spacee.".into(),
+                    true,
                     p,
                 ))
             })
@@ -888,14 +889,8 @@ impl Spacee {
             .min_h_0()
             .child(
                 canvas(
-                    move |bounds, _, cx| {
-                        this.update(cx, |this, cx| {
-                            if this.live_bounds != Some(bounds) {
-                                this.live_bounds = Some(bounds);
-                                cx.notify();
-                            }
-                        })
-                    },
+                    // The progress timer renders again soon, picking up a new size.
+                    move |bounds, _, cx| this.update(cx, |this, _| this.live_bounds = Some(bounds)),
                     move |bounds, _, window, _| {
                         let geometry = chart::Geometry::new(bounds, LIVE_LEVELS);
                         if let Some((tree, layout)) = &live {
@@ -1204,8 +1199,9 @@ impl Render for Spacee {
     }
 }
 
-/// Says why space is missing and offers to open the Full Disk Access settings.
-pub fn full_disk_access_notice(title: SharedString, text: &'static str, p: &Palette) -> Div {
+/// Says why space is missing and, with `grant`, offers to open the Full Disk Access
+/// settings.
+pub fn notice(title: SharedString, text: SharedString, grant: bool, p: &Palette) -> Div {
     style::card(p)
         .flex_none()
         .flex()
@@ -1221,11 +1217,13 @@ pub fn full_disk_access_notice(title: SharedString, text: &'static str, p: &Pale
                 .child(div().font_weight(FontWeight::SEMIBOLD).child(title))
                 .child(div().text_size(px(13.)).text_color(p.dim).child(text)),
         )
-        .child(
-            style::button("full-disk-access", style::Button::Normal, p)
-                .child("Grant Full Disk Access…")
-                .on_click(|_, _, _| platform::open_full_disk_access_settings()),
-        )
+        .when(grant, |notice| {
+            notice.child(
+                style::button("full-disk-access", style::Button::Normal, p)
+                    .child("Grant Full Disk Access…")
+                    .on_click(|_, _, _| platform::open_full_disk_access_settings()),
+            )
+        })
 }
 
 /// The error's message without Rust's " (os error N)" suffix, such as "No such file or
@@ -1313,6 +1311,7 @@ fn main() {
                 KeyBinding::new("cmd-,", OpenSettings, None),
                 KeyBinding::new("cmd-q", Quit, None),
                 KeyBinding::new("escape", CancelScan, None),
+                KeyBinding::new("escape", browser::GoUp, Some("Browser")),
                 KeyBinding::new("space", browser::QuickLook, Some("Browser")),
             ]);
             cx.set_menus(vec![Menu {
