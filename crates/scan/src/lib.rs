@@ -5,8 +5,8 @@ use std::os::macos::fs::MetadataExt as _;
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
 
@@ -104,6 +104,20 @@ pub struct Progress {
     bytes: AtomicU64,
     current: Mutex<PathBuf>,
     cancelled: AtomicBool,
+    /// Directories near the root in the order the walk found them, so every parent comes
+    /// before its children.
+    live: Mutex<Vec<LiveDir>>,
+}
+
+/// The deepest directory level a running scan tracks for [`Progress::snapshot`]. The
+/// chart draws five rings, and anything deeper counts toward its ancestor at this level.
+const LIVE_DEPTH: usize = 5;
+
+struct LiveDir {
+    name: Box<str>,
+    parent: Option<usize>,
+    /// Bytes found so far in this directory and in its descendants that aren't tracked.
+    bytes: Arc<AtomicU64>,
 }
 
 impl Progress {
@@ -127,6 +141,54 @@ impl Progress {
 
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// The directories found so far near the root, sized by what the walk has counted in
+    /// each, for drawing a scan while it runs. Files aren't included. `None` before the
+    /// walk has started.
+    pub fn snapshot(&self) -> Option<Tree> {
+        let live = self.live.lock().unwrap();
+        let mut nodes: Vec<Node> = live
+            .iter()
+            .map(|dir| Node {
+                name: dir.name.clone(),
+                parent: dir.parent.map(|p| NodeId(p as u32)),
+                kind: Kind::Dir,
+                size: dir.bytes.load(Ordering::Relaxed),
+                file_count: 0,
+                children: vec![],
+            })
+            .collect();
+        drop(live);
+        if nodes.is_empty() {
+            return None;
+        }
+        for i in (1..nodes.len()).rev() {
+            let parent = nodes[i].parent.unwrap().0 as usize;
+            nodes[parent].size += nodes[i].size;
+            nodes[parent].children.push(NodeId(i as u32));
+        }
+        for i in 0..nodes.len() {
+            let mut children = std::mem::take(&mut nodes[i].children);
+            children.sort_unstable_by_key(|c| std::cmp::Reverse(nodes[c.0 as usize].size));
+            nodes[i].children = children;
+        }
+        Some(Tree {
+            nodes,
+            root: NodeId(0),
+            errors: vec![],
+        })
+    }
+
+    fn track(&self, name: &str, parent: Option<usize>) -> (usize, Arc<AtomicU64>) {
+        let bytes = Arc::new(AtomicU64::new(0));
+        let mut live = self.live.lock().unwrap();
+        live.push(LiveDir {
+            name: name.into(),
+            parent,
+            bytes: bytes.clone(),
+        });
+        (live.len() - 1, bytes)
     }
 }
 
@@ -154,7 +216,7 @@ fn walk(root: &Path, mounts: HashSet<PathBuf>, progress: &Progress) -> io::Resul
         errors: Mutex::new(vec![]),
         progress,
     };
-    let built = walker.entry(root.as_os_str().to_string_lossy().into(), root, &meta);
+    let built = walker.entry(root.as_os_str().to_string_lossy().into(), root, &meta, None);
     if progress.is_cancelled() {
         return Err(io::ErrorKind::Interrupted.into());
     }
@@ -183,6 +245,15 @@ struct Walker<'a> {
     progress: &'a Progress,
 }
 
+/// The tracked directory nearest above an entry, where the entry's bytes are counted
+/// while the scan runs.
+#[derive(Clone, Copy)]
+struct Live<'a> {
+    index: usize,
+    depth: usize,
+    bytes: &'a AtomicU64,
+}
+
 /// A subtree built by one worker, flattened into the arena once the walk finishes.
 struct Built {
     name: Box<str>,
@@ -193,7 +264,14 @@ struct Built {
 }
 
 impl Walker<'_> {
-    fn entry(&self, name: Box<str>, path: &Path, meta: &fs::Metadata) -> Built {
+    /// `live` is `None` only for the root.
+    fn entry(
+        &self,
+        name: Box<str>,
+        path: &Path,
+        meta: &fs::Metadata,
+        live: Option<Live<'_>>,
+    ) -> Built {
         let ft = meta.file_type();
         let own = self.allocated(meta);
         self.progress.bytes.fetch_add(own, Ordering::Relaxed);
@@ -207,6 +285,9 @@ impl Walker<'_> {
             };
         }
         if !ft.is_dir() {
+            if let Some(live) = live {
+                live.bytes.fetch_add(own, Ordering::Relaxed);
+            }
             self.progress.files.fetch_add(1, Ordering::Relaxed);
             return Built {
                 name,
@@ -216,11 +297,24 @@ impl Walker<'_> {
                 children: vec![],
             };
         }
+        let tracked;
+        let live = match live {
+            Some(live) if live.depth >= LIVE_DEPTH => live,
+            parent => {
+                tracked = self.progress.track(&name, parent.map(|p| p.index));
+                Live {
+                    index: tracked.0,
+                    depth: parent.map_or(0, |p| p.depth + 1),
+                    bytes: &tracked.1,
+                }
+            }
+        };
+        live.bytes.fetch_add(own, Ordering::Relaxed);
         let children = if meta.dev() == self.dev
             && meta.st_flags() & SF_DATALESS == 0
             && !self.mounts.contains(path)
         {
-            self.children(path)
+            self.children(path, live)
         } else {
             vec![]
         };
@@ -233,7 +327,7 @@ impl Walker<'_> {
         }
     }
 
-    fn children(&self, dir: &Path) -> Vec<Built> {
+    fn children(&self, dir: &Path, live: Live<'_>) -> Vec<Built> {
         if self.progress.is_cancelled() {
             return vec![];
         }
@@ -260,7 +354,7 @@ impl Walker<'_> {
                 match entry.metadata() {
                     Ok(meta) => {
                         let name = entry.file_name().to_string_lossy().into();
-                        Some(self.entry(name, &path, &meta))
+                        Some(self.entry(name, &path, &meta, Some(live)))
                     }
                     Err(error) => {
                         self.error(path, error);
@@ -571,6 +665,33 @@ mod tests {
         assert_eq!(names, ["big", "Hidden space", "small"]);
         assert_eq!(root.size, before + hidden);
         assert_eq!(child(&tree, tree.root(), "Hidden space").kind, Kind::Hidden);
+    }
+
+    #[test]
+    fn snapshot_of_a_finished_scan_matches_its_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let deep = dir.path().join("a/b/c/d/e/f/g");
+        fs::create_dir_all(&deep).unwrap();
+        write(&deep.join("bottom"), 200_000);
+        write(&dir.path().join("a/top"), 10_000);
+        fs::create_dir(dir.path().join("z")).unwrap();
+
+        let progress = Progress::default();
+        let tree = scan(dir.path(), &progress).unwrap();
+        let live = progress.snapshot().unwrap();
+
+        let (root, live_root) = (tree.node(tree.root()), live.node(live.root()));
+        assert_eq!((&*live_root.name, live_root.size), (&*root.name, root.size));
+        let names: Vec<_> = live_root
+            .children
+            .iter()
+            .map(|&c| &*live.node(c).name)
+            .collect();
+        assert_eq!(names, ["a", "z"]);
+        let a = child(&tree, tree.root(), "a");
+        assert_eq!(child(&live, live.root(), "a").size, a.size);
+        assert_eq!(child(&live, live.root(), "a").children.len(), 1);
+        assert_eq!(live.node_count(), 1 + LIVE_DEPTH + 1);
     }
 
     fn child_id(tree: &Tree, parent: NodeId, name: &str) -> NodeId {

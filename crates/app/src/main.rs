@@ -6,7 +6,7 @@ mod volumes;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::component::Selectable;
 use gpui_kit::component::button::Button;
@@ -14,10 +14,11 @@ use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::sidebar::{
     Sidebar, SidebarFooter, SidebarGroup, SidebarHeader, SidebarMenu, SidebarMenuItem,
 };
-use gpui_kit::component::{ActiveTheme, IconName, Theme, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme, IconName, Sizable as _, Theme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use scan::Progress;
+use sunburst::{Layout, Options};
 
 use crate::browser::{Browser, format_count, format_size};
 use crate::settings::{Appearance, Settings};
@@ -305,41 +306,113 @@ impl Spacee {
             None => self.render_volumes(cx),
             Some(Scan::Done(browser)) => browser.clone().into_any_element(),
             Some(Scan::Failed(message)) => centered(div().child(message.clone())),
-            Some(Scan::Running { path, progress, .. }) => centered(
-                v_flex()
-                    .items_center()
+            Some(Scan::Running { path, progress, .. }) => self.render_running(path, progress, cx),
+        }
+    }
+
+    /// The folders found so far as a sunburst that grows while the scan runs.
+    fn render_running(
+        &self,
+        path: &Path,
+        progress: &Progress,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let start = Instant::now();
+        let live = progress.snapshot().map(|tree| {
+            let layout = Layout::new(&tree, tree.root(), Options::default());
+            (tree, layout)
+        });
+        if std::env::var_os("SPACEE_PERF").is_some()
+            && let Some((tree, _)) = &live
+        {
+            eprintln!(
+                "snapshot: {} folders in {:.2?}",
+                tree.node_count(),
+                start.elapsed()
+            );
+        }
+        let dark = cx.theme().is_dark();
+        v_flex()
+            .size_full()
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .w_full()
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _, window, _| {
+                                if let Some((tree, layout)) = &live {
+                                    let arcs = layout.draw_arcs();
+                                    chart::paint(tree, layout, &arcs, None, dark, bounds, window);
+                                }
+                            },
+                        )
+                        .size_full(),
+                    )
+                    .child(
+                        v_flex()
+                            .absolute()
+                            .inset_0()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                v_flex()
+                                    .items_center()
+                                    .max_w(px(180.))
+                                    .child(
+                                        div()
+                                            .text_sm()
+                                            .truncate()
+                                            .child(format!("Scanning {}", folder_name(path))),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xl()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(format_size(progress.bytes())),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(format!(
+                                                "{} files",
+                                                format_count(progress.files())
+                                            )),
+                                    ),
+                            ),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .h(px(52.))
+                    .px_4()
                     .gap_3()
-                    .max_w(px(480.))
-                    .child(div().child(format!("Scanning {}", folder_name(path))))
+                    .border_t_1()
+                    .border_color(cx.theme().border)
                     .child(
                         div()
-                            .text_2xl()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format_size(progress.bytes())),
-                    )
-                    .child(
-                        div()
+                            .flex_1()
+                            .min_w_0()
                             .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("{} files", format_count(progress.files()))),
-                    )
-                    .child(
-                        div()
-                            .w_full()
-                            .text_xs()
-                            .text_center()
                             .truncate()
                             .text_color(cx.theme().muted_foreground)
                             .child(progress.current().display().to_string()),
                     )
-                    .child(Button::new("cancel").label("Cancel").on_click(cx.listener(
-                        |this, _, _, cx| {
-                            this.cancel_scan();
-                            this.show(Page::Volumes, cx);
-                        },
-                    ))),
-            ),
-        }
+                    .child(
+                        Button::new("cancel")
+                            .small()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.cancel_scan();
+                                this.show(Page::Volumes, cx);
+                            })),
+                    ),
+            )
+            .into_any_element()
     }
 
     fn render_settings(&self, cx: &mut Context<Self>) -> AnyElement {

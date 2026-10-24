@@ -66,7 +66,7 @@ How the walk works:
 - **Permission errors** go into `errors` and are not fatal. The UI shows a count ("1,204 items couldn't be read") and offers to grant Full Disk Access.
 - **Don't descend into cloud-only folders.** iCloud Drive and other File Provider folders can be "dataless" (`SF_DATALESS` in `st_flags`): their contents live only in the cloud. Listing one makes macOS fetch it over the network, which blocked for 3–10 s per folder in `~/Library/Mobile Documents`. They take no local space, so the walk records them without listing them.
 - **Progress.** The walker updates a shared `Progress` (atomic file and byte counters, the most recent directory, a cancel flag) that the UI reads every 100 ms. The walk checks the flag before each directory and each entry, and a cancelled scan returns `ErrorKind::Interrupted`. Measured on `~` (2.3M files): cancel stops in 2–25 ms.
-- **Growing sunburst (deferred).** The walk builds subtrees bottom-up, so there is no partial tree to draw until it finishes. Showing the sunburst as it grows needs a walker that publishes partial snapshots; it moves to milestone 7.
+- **Growing sunburst.** The walk builds subtrees bottom-up, so the finished tree only exists at the end. To draw the scan while it runs, the walker also registers every directory down to depth 5 (the chart's ring count) in `Progress`, each with an atomic byte counter, and adds every entry's bytes to its nearest registered ancestor. `Progress::snapshot()` sums those counters into a `Tree` of folders, which the app lays out and paints on each 100 ms progress tick. On `/` that is about 22k folders and takes about 1 ms, and the walk's time is unchanged (23.8 s with it against 23.4–25.5 s without).
 
 ### 2.2 `sunburst`: pure geometry
 
