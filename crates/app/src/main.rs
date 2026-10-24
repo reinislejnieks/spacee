@@ -163,7 +163,8 @@ impl Spacee {
         }
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// `collapsed` shrinks it to icons, leaving the chart room in a narrow window.
+    fn render_sidebar(&self, collapsed: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let mut locations = SidebarMenu::new().child(
             SidebarMenuItem::new("Volumes")
                 .icon(IconName::HardDrive)
@@ -190,7 +191,10 @@ impl Spacee {
         );
 
         Sidebar::new("sidebar")
-            .header(SidebarHeader::new().child("Spacee"))
+            .collapsed(collapsed)
+            .when(!collapsed, |sidebar| {
+                sidebar.header(SidebarHeader::new().child("Spacee"))
+            })
             .child(SidebarGroup::new("Scan").child(locations))
             .footer(
                 SidebarFooter::new()
@@ -199,7 +203,12 @@ impl Spacee {
                         MouseButton::Left,
                         cx.listener(|this, _, _, cx| this.show(Page::Settings, cx)),
                     )
-                    .child(h_flex().gap_2().child(IconName::Settings).child("Settings")),
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(IconName::Settings)
+                            .when(!collapsed, |footer| footer.child("Settings")),
+                    ),
             )
     }
 
@@ -492,7 +501,8 @@ impl Spacee {
 }
 
 impl Render for Spacee {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let collapsed = window.viewport_size().width < px(880.);
         let page = match self.page {
             Page::Volumes => self.render_volumes(cx),
             Page::Scan => self.render_scan(cx),
@@ -504,7 +514,7 @@ impl Render for Spacee {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_drop(cx.listener(Self::drop_paths))
-            .child(self.render_sidebar(cx))
+            .child(self.render_sidebar(collapsed, cx))
             .child(div().size_full().min_w_0().child(page))
     }
 }
@@ -568,6 +578,7 @@ fn main() {
 
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::centered(size(px(1100.), px(720.)), cx)),
+                window_min_size: Some(size(px(640.), px(460.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("Spacee".into()),
                     ..Default::default()

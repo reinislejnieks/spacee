@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::f32::consts::TAU;
 use std::ops::Range;
 use std::rc::Rc;
@@ -9,7 +10,7 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{ActiveTheme, Icon, IconName, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use scan::{Kind, NodeId, Tree};
+use scan::{FileType, Kind, NodeId, Tree};
 use sunburst::{DrawArc, Hit, Layout, Options, Target};
 
 use crate::{chart, platform};
@@ -365,11 +366,33 @@ impl Browser {
             .hovered
             .and(self.subject())
             .map(|id| Dragged::new(&self.tree, id));
+        // The centre label fits inside the hole, measured on the last frame.
+        let hole = self.chart_bounds.map_or(0.0, |bounds| {
+            2.0 * self.layout.radius_at(0.0, chart::geometry(bounds).1)
+        });
+        let types: HashSet<FileType> = arcs
+            .iter()
+            .filter_map(|a| match a.target {
+                Target::Node(id) if self.tree.node(id).kind != Kind::Unaccounted => {
+                    Some(self.tree.node(id).file_type)
+                }
+                _ => None,
+            })
+            .collect();
+        let legend = FileType::ALL
+            .into_iter()
+            .filter(|t| types.contains(t))
+            .map(|t| {
+                h_flex()
+                    .gap_1p5()
+                    .child(div().size_2().rounded_full().bg(chart::swatch(t, dark)))
+                    .child(t.label())
+            });
 
-        div()
+        v_flex()
             .id("chart")
-            .relative()
             .flex_1()
+            .min_w(px(240.))
             .h_full()
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
@@ -377,39 +400,61 @@ impl Browser {
                 chart.on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
             })
             .child(
-                canvas(
-                    {
-                        let this = this.clone();
-                        move |bounds, _, cx| {
-                            this.update(cx, |this, _| this.chart_bounds = Some(bounds))
-                        }
-                    },
-                    move |bounds, _, window, cx| {
-                        let this = this.read(cx);
-                        let (tree, layout) = (&this.tree, &this.layout);
-                        chart::paint(tree, layout, &arcs, hovered, dark, bounds, window)
-                    },
-                )
-                .size_full(),
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(
+                        canvas(
+                            {
+                                let this = this.clone();
+                                move |bounds, _, cx| {
+                                    this.update(cx, |this, _| this.chart_bounds = Some(bounds))
+                                }
+                            },
+                            move |bounds, _, window, cx| {
+                                let this = this.read(cx);
+                                let (tree, layout) = (&this.tree, &this.layout);
+                                chart::paint(tree, layout, &arcs, hovered, dark, bounds, window)
+                            },
+                        )
+                        .size_full(),
+                    )
+                    .when(hole >= 60.0, |chart| {
+                        chart.child(
+                            v_flex()
+                                .absolute()
+                                .inset_0()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    v_flex()
+                                        .items_center()
+                                        .max_w(px((hole * 0.85).min(180.0)))
+                                        .child(div().text_sm().truncate().child(title))
+                                        .child(
+                                            div()
+                                                .when(hole >= 120.0, |s| s.text_xl())
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .child(size),
+                                        ),
+                                ),
+                        )
+                    }),
             )
             .child(
-                v_flex()
-                    .absolute()
-                    .inset_0()
-                    .items_center()
+                h_flex()
+                    .flex_none()
+                    .flex_wrap()
                     .justify_center()
-                    .child(
-                        v_flex()
-                            .items_center()
-                            .max_w(px(180.))
-                            .child(div().text_sm().truncate().child(title))
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child(size),
-                            ),
-                    ),
+                    .gap_x_4()
+                    .gap_y_1()
+                    .px_4()
+                    .pb_3()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .children(legend),
             )
     }
 
@@ -440,6 +485,7 @@ impl Browser {
         h_flex()
             .px_4()
             .py_2()
+            .overflow_x_hidden()
             .border_b_1()
             .border_color(cx.theme().border)
             .child(Breadcrumb::new().children(items))
@@ -561,7 +607,7 @@ impl Browser {
                 .border_color(cx.theme().border)
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child(div().flex_1().child(format!(
+                .child(div().flex_1().min_w_0().child(format!(
                     "{} {items} couldn't be read. {consequence}",
                     format_count(count as u64)
                 )))
@@ -608,6 +654,8 @@ impl Browser {
         let total = self.marked.iter().map(|&c| self.tree.node(c).size).sum();
         let hint = div()
             .flex_1()
+            .min_w_0()
+            .truncate()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
             .child("Drag items here, or right-click them and choose Mark for Trash");
@@ -692,9 +740,10 @@ impl Render for Browser {
                     .child(self.render_chart(window, cx))
                     .child(
                         div()
-                            .w(px(320.))
+                            .w(relative(0.38))
+                            .min_w(px(220.))
+                            .max_w(px(320.))
                             .h_full()
-                            .flex_none()
                             .border_l_1()
                             .border_color(cx.theme().border)
                             .py_1()

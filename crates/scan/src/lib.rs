@@ -12,6 +12,11 @@ use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
 
+mod file_type;
+
+use file_type::Bytes;
+pub use file_type::FileType;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct NodeId(u32);
 
@@ -31,6 +36,9 @@ pub struct Node {
     pub name: Box<str>,
     pub parent: Option<NodeId>,
     pub kind: Kind,
+    /// For a directory, the type that fills most of its bytes. [`FileType::Other`] while a
+    /// scan runs, since [`Progress::snapshot`] doesn't see files.
+    pub file_type: FileType,
     /// Allocated bytes on disk (`st_blocks * 512`), summed over descendants for directories.
     pub size: u64,
     pub file_count: u32,
@@ -156,6 +164,7 @@ impl Progress {
                 name: dir.name.clone(),
                 parent: dir.parent.map(|p| NodeId(p as u32)),
                 kind: Kind::Dir,
+                file_type: FileType::Other,
                 size: dir.bytes.load(Ordering::Relaxed),
                 file_count: 0,
                 children: vec![],
@@ -217,7 +226,7 @@ fn walk(root: &Path, mounts: HashSet<PathBuf>, progress: &Progress) -> io::Resul
         errors: Mutex::new(vec![]),
         progress,
     };
-    let built = walker.entry(root.as_os_str().to_string_lossy().into(), root, &meta, None);
+    let (built, _) = walker.entry(root.as_os_str().to_string_lossy().into(), root, &meta, None);
     if progress.is_cancelled() {
         return Err(io::ErrorKind::Interrupted.into());
     }
@@ -260,37 +269,49 @@ struct Live<'a> {
 struct Built {
     name: Box<str>,
     kind: Kind,
+    file_type: FileType,
     size: u64,
     file_count: u32,
     children: Vec<Built>,
 }
 
 impl Walker<'_> {
-    /// `live` is `None` only for the root.
-    fn entry(&self, name: Box<str>, path: &Path, meta: &Meta, live: Option<Live<'_>>) -> Built {
+    /// `live` is `None` only for the root. Also returns the subtree's bytes per file type.
+    fn entry(
+        &self,
+        name: Box<str>,
+        path: &Path,
+        meta: &Meta,
+        live: Option<Live<'_>>,
+    ) -> (Built, Bytes) {
         let own = self.allocated(meta);
         self.progress.bytes.fetch_add(own, Ordering::Relaxed);
         if meta.kind == Kind::Symlink {
-            return Built {
+            let built = Built {
                 name,
                 kind: Kind::Symlink,
+                file_type: FileType::Other,
                 size: 0,
                 file_count: 0,
                 children: vec![],
             };
+            return (built, Bytes::default());
         }
         if meta.kind == Kind::File {
             if let Some(live) = live {
                 live.bytes.fetch_add(own, Ordering::Relaxed);
             }
             self.progress.files.fetch_add(1, Ordering::Relaxed);
-            return Built {
+            let file_type = FileType::of_file(&name);
+            let built = Built {
                 name,
                 kind: Kind::File,
+                file_type,
                 size: own,
                 file_count: 1,
                 children: vec![],
             };
+            return (built, Bytes::of(file_type, own));
         }
         let tracked;
         let live = match live {
@@ -310,16 +331,31 @@ impl Walker<'_> {
         } else {
             vec![]
         };
-        Built {
+        let mut bytes = Bytes::default();
+        for (_, b) in &children {
+            bytes.add(b);
+        }
+        let children: Vec<Built> = children.into_iter().map(|(c, _)| c).collect();
+        let size = own + children.iter().map(|c| c.size).sum::<u64>();
+        let file_type = match FileType::of_bundle(&name) {
+            Some(file_type) => {
+                bytes = Bytes::of(file_type, size);
+                file_type
+            }
+            None => bytes.most(),
+        };
+        let built = Built {
             name,
             kind: Kind::Dir,
-            size: own + children.iter().map(|c| c.size).sum::<u64>(),
+            file_type,
+            size,
             file_count: children.iter().map(|c| c.file_count).sum(),
             children,
-        }
+        };
+        (built, bytes)
     }
 
-    fn children(&self, dir: &Path, live: Live<'_>) -> Vec<Built> {
+    fn children(&self, dir: &Path, live: Live<'_>) -> Vec<(Built, Bytes)> {
         if self.progress.is_cancelled() {
             return vec![];
         }
@@ -522,6 +558,7 @@ impl Tree {
             name: "Unaccounted space".into(),
             parent: Some(self.root),
             kind: Kind::Unaccounted,
+            file_type: FileType::Other,
             size: bytes,
             file_count: 0,
             children: vec![],
@@ -568,6 +605,7 @@ fn flatten(built: Built, parent: Option<NodeId>, nodes: &mut Vec<Node>) -> NodeI
         name: built.name,
         parent,
         kind: built.kind,
+        file_type: built.file_type,
         size: built.size,
         file_count: built.file_count,
         children: vec![],
@@ -621,6 +659,32 @@ mod tests {
         assert_eq!(tree.node(tree.root()).file_count, 2);
         assert_eq!(child(&tree, tree.root(), "a").size, blocks(&root.join("a")));
         assert!(tree.errors.is_empty());
+    }
+
+    #[test]
+    fn folders_take_the_type_filling_most_of_them_and_bundles_count_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Movies/clips")).unwrap();
+        write(&root.join("Movies/clips/a.mov"), 300_000);
+        write(&root.join("Movies/notes.txt"), 100_000);
+        write(&root.join("Movies/poster.png"), 200_000);
+        fs::create_dir_all(root.join("Tool.app/Contents")).unwrap();
+        write(&root.join("Tool.app/Contents/icon.png"), 500_000);
+
+        let tree = scan(root, &Progress::default()).unwrap();
+        let movies = child_id(&tree, tree.root(), "Movies");
+        assert_eq!(tree.node(movies).file_type, FileType::Video);
+        assert_eq!(
+            child(&tree, movies, "notes.txt").file_type,
+            FileType::Document
+        );
+        assert_eq!(
+            child(&tree, tree.root(), "Tool.app").file_type,
+            FileType::App
+        );
+        // The app's PNG counts as App bytes, so they outweigh the video.
+        assert_eq!(tree.node(tree.root()).file_type, FileType::App);
     }
 
     #[test]

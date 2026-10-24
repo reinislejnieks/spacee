@@ -2,7 +2,7 @@ use std::f32::consts::{PI, TAU};
 use std::time::Instant;
 
 use gpui_kit::*;
-use scan::{Kind, Tree};
+use scan::{FileType, Kind, Tree};
 use sunburst::{DrawArc, Layout, Target};
 
 /// Gap between neighbouring arcs, in pixels.
@@ -53,25 +53,47 @@ pub fn paint(
 
 pub fn color(tree: &Tree, arc: &DrawArc, hovered: bool, dark: bool) -> Hsla {
     let depth = arc.inner;
-    let grey = (0.0, if dark { 0.35 } else { 0.72 });
-    let (saturation, lightness) = match arc.target {
+    let grey = (0.0, 0.0, if dark { 0.35 } else { 0.72 });
+    let (hue, saturation, lightness) = match arc.target {
         Target::Smaller { .. } => grey,
         Target::Node(id) => {
-            let s = 0.72 - depth * 0.07;
+            let node = tree.node(id);
+            let (hue, saturation) = palette(node.file_type);
+            let s = saturation * (1.0 - depth * 0.1);
             let l = if dark {
                 0.52 + depth * 0.05
             } else {
                 0.50 + depth * 0.07
             };
-            match tree.node(id).kind {
-                Kind::Dir => (s, l),
+            match node.kind {
+                Kind::Dir => (hue, s, l),
                 Kind::Unaccounted => grey,
-                Kind::File | Kind::Symlink => (s * 0.45, l),
+                Kind::File | Kind::Symlink => (hue, s * 0.55, l),
             }
         }
     };
     let lightness = if hovered { lightness + 0.15 } else { lightness };
-    hsla(arc.hue(), saturation, lightness.min(0.92), arc.opacity)
+    hsla(hue, saturation, lightness.min(0.92), arc.opacity)
+}
+
+/// The colour of a top-level folder of this type, for the legend.
+pub fn swatch(file_type: FileType, dark: bool) -> Hsla {
+    let (hue, saturation) = palette(file_type);
+    hsla(hue, saturation, if dark { 0.52 } else { 0.50 }, 1.0)
+}
+
+/// Hue and saturation for each type, spaced so neighbours on the wheel stay apart.
+fn palette(file_type: FileType) -> (f32, f32) {
+    match file_type {
+        FileType::Video => (0.92, 0.72),
+        FileType::Audio => (0.04, 0.78),
+        FileType::Image => (0.12, 0.80),
+        FileType::Code => (0.36, 0.55),
+        FileType::App => (0.50, 0.65),
+        FileType::Document => (0.60, 0.72),
+        FileType::Archive => (0.76, 0.55),
+        FileType::Other => (0.62, 0.14),
+    }
 }
 
 /// SVG-style arcs can't span a full circle, so arcs wider than half a turn are drawn in two pieces.

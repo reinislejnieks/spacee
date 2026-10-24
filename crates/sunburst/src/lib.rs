@@ -57,13 +57,6 @@ pub struct DrawArc {
     pub opacity: f32,
 }
 
-impl DrawArc {
-    /// Hue in `0..1` from the arc's position around the circle.
-    pub fn hue(&self) -> f32 {
-        (self.start + self.sweep / 2.0) / TAU
-    }
-}
-
 /// Arcs for one focused directory, one `Vec` per ring, each sorted by `start`.
 #[derive(Debug)]
 pub struct Layout {
