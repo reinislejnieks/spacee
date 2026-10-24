@@ -19,7 +19,11 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$ROOT/target/$PROFILE/spacee" "$APP/Contents/MacOS/spacee"
 cp "$ROOT/crates/app/Info.plist" "$APP/Contents/Info.plist"
-cp "$ROOT/crates/app/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
+# Compiles the Icon Composer icon into Assets.car, which has the light and dark icons
+# for macOS 26, and AppIcon.icns for older systems.
+xcrun actool "$ROOT/crates/app/AppIcon.icon" --compile "$APP/Contents/Resources" \
+  --app-icon AppIcon --platform macosx --minimum-deployment-target 13.0 \
+  --target-device mac --output-partial-info-plist /dev/null >/dev/null
 
 codesign --force --options runtime --timestamp=none --sign "$IDENTITY" "$APP"
 

@@ -114,7 +114,7 @@ A pre-commit hook in `.githooks` runs `cargo fmt --check` and `cargo clippy -- -
 git config core.hooksPath .githooks
 ```
 
-The app icon lives in `crates/app/AppIcon.icns` and is drawn by `scripts/icon.py` (needs Pillow). Edit and rerun it to change the icon.
+The app icon is a small icicle chart with light and dark versions. It lives in `crates/app/AppIcon.icon`, an Icon Composer package drawn by `scripts/icon.py` (needs Pillow). Edit and rerun it to change the icon. `scripts/run.sh` compiles it with `actool` into `Assets.car`, which macOS 26 uses to switch the icon with the appearance, and `AppIcon.icns` for older systems.
 
 The workspace has three crates:
 

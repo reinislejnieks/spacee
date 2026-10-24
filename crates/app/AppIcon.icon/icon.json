@@ -1,0 +1,44 @@
+{
+  "fill": {
+    "automatic-gradient": "srgb:0.95686,0.96863,0.98039,1.00000"
+  },
+  "fill-specializations": [
+    {
+      "appearance": "dark",
+      "value": {
+        "automatic-gradient": "srgb:0.07843,0.10196,0.13725,1.00000"
+      }
+    }
+  ],
+  "groups": [
+    {
+      "layers": [
+        {
+          "name": "icicle",
+          "image-name-specializations": [
+            {
+              "value": "icicle-light.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "icicle-dark.png"
+            }
+          ]
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.5
+      },
+      "translucency": {
+        "enabled": false,
+        "value": 0.5
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
