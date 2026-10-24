@@ -64,6 +64,13 @@ impl Geometry {
         )
     }
 
+    fn first_row(&self) -> Bounds<Pixels> {
+        Bounds::new(
+            point(self.bounds.left(), px(self.rows_top())),
+            size(self.bounds.size.width - px(GAP), px(self.row - GAP)),
+        )
+    }
+
     pub fn spot(&self, position: Point<Pixels>) -> Option<Spot> {
         if !self.bounds.contains(&position) || self.row <= 0.0 {
             return None;
@@ -94,32 +101,10 @@ pub fn paint(
     window: &mut Window,
 ) {
     let start = Instant::now();
-    let edge = if dark { white() } else { black() };
-    window.paint_quad(quad(
-        geometry.root_bar(),
-        px(9.),
-        linear_gradient(
-            180.,
-            linear_color_stop(edge.opacity(0.05), 0.),
-            linear_color_stop(edge.opacity(0.025), 1.),
-        ),
-        px(1.),
-        edge.opacity(0.08),
-        BorderStyle::default(),
-    ));
+    paint_root_bar(dark, geometry, window);
     if arcs.is_empty() {
         // An empty folder still shows where its chart would be.
-        let row = DrawArc {
-            target: Target::Smaller {
-                parent: tree.root(),
-            },
-            inner: 0.0,
-            outer: 1.0,
-            start: 0.0,
-            sweep: TAU,
-            opacity: 1.0,
-        };
-        paint_block(geometry.block(&row), grey(dark), 0.12, false, window);
+        paint_block(geometry.first_row(), grey(dark), 0.12, false, window);
     }
     for arc in arcs {
         let bounds = geometry.block(arc);
@@ -139,6 +124,22 @@ pub fn paint(
     if std::env::var_os("SPACEE_PERF").is_some() {
         eprintln!("paint: {} arcs in {:.2?}", arcs.len(), start.elapsed());
     }
+}
+
+pub fn paint_root_bar(dark: bool, geometry: Geometry, window: &mut Window) {
+    let edge = if dark { white() } else { black() };
+    window.paint_quad(quad(
+        geometry.root_bar(),
+        px(9.),
+        linear_gradient(
+            180.,
+            linear_color_stop(edge.opacity(0.05), 0.),
+            linear_color_stop(edge.opacity(0.025), 1.),
+        ),
+        px(1.),
+        edge.opacity(0.08),
+        BorderStyle::default(),
+    ));
 }
 
 /// A block tinted with `color` at roughly `alpha`, lit a little from the top.

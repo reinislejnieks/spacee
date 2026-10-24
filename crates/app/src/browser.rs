@@ -22,7 +22,7 @@ const ZOOM: Duration = Duration::from_millis(350);
 /// A row of the children list, with the gap below it.
 const ROW_HEIGHT: f32 = 70.0;
 
-/// The sunburst, breadcrumb, children list and Trash tray for one finished scan.
+/// The icicle, breadcrumb, children list and Trash tray for one finished scan.
 pub struct Browser {
     tree: Tree,
     /// What to call the root: the volume's name, such as "Macintosh HD", or the folder's.
@@ -1128,6 +1128,10 @@ impl Browser {
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = Palette::of(cx);
+        // Esc and space reach the results as soon as they show, before any hover.
+        if window.focused(cx).is_none() {
+            window.focus(&self.focus_handle, cx);
+        }
         let narrow = window.viewport_size().width < px(980.);
         let this = cx.entity();
         let chart = self.render_chart(&p, window, cx);

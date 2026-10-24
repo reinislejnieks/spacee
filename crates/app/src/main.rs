@@ -844,8 +844,8 @@ impl Spacee {
                 max_depth: LIVE_LEVELS,
                 ..Options::default()
             };
-            let layout = Layout::new(&tree, tree.root(), options);
-            (tree, layout)
+            let arcs = Layout::new(&tree, tree.root(), options).draw_arcs();
+            (tree, arcs)
         });
         if std::env::var_os("SPACEE_PERF").is_some()
             && let Some((tree, _)) = &live
@@ -867,9 +867,8 @@ impl Spacee {
         let overlay = self.live_bounds.map(|bounds| {
             let geometry = chart::Geometry::new(bounds, LIVE_LEVELS);
             let mut labels = match &live {
-                Some((tree, layout)) => {
-                    let size = tree.node(tree.root()).size;
-                    chart::labels(tree, &layout.draw_arcs(), size, geometry, cx)
+                Some((tree, arcs)) => {
+                    chart::labels(tree, arcs, tree.node(tree.root()).size, geometry, cx)
                 }
                 None => vec![],
             };
@@ -893,9 +892,11 @@ impl Spacee {
                     move |bounds, _, cx| this.update(cx, |this, _| this.live_bounds = Some(bounds)),
                     move |bounds, _, window, _| {
                         let geometry = chart::Geometry::new(bounds, LIVE_LEVELS);
-                        if let Some((tree, layout)) = &live {
-                            let arcs = layout.draw_arcs();
-                            chart::paint(tree, &arcs, None, dark, geometry, window);
+                        match &live {
+                            Some((tree, arcs)) => {
+                                chart::paint(tree, arcs, None, dark, geometry, window)
+                            }
+                            None => chart::paint_root_bar(dark, geometry, window),
                         }
                     },
                 )
