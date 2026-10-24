@@ -121,7 +121,7 @@ The workspace has three crates:
 | Crate | Role |
 | --- | --- |
 | `crates/scan` | Walks the filesystem in parallel and builds the size tree. Counts allocated bytes, counts hard links once, and doesn't follow symlinks or cross onto other volumes or mount points. |
-| `crates/sunburst` | Turns the tree into a partition by depth and extent, merges slivers into "smaller objects", finds the block under the pointer, and computes zoom animation frames. No UI code. The name dates from the original radial chart. |
+| `crates/icicle` | Turns the tree into a partition by depth and extent, merges slivers into "smaller objects", finds the block under the pointer, and computes zoom animation frames. No UI code. |
 | `crates/app` | The GPUI app: the window, the painted icicle chart, the volumes and scan screens, the children list and the Trash tray. |
 
 ## License
