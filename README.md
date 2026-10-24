@@ -1,41 +1,60 @@
+<div align="center">
+
 # Spacee
 
-A native macOS app that shows what's using your disk as an interactive sunburst. Built in Rust with [GPUI](https://www.gpui.rs/) and [gpui-kit](https://github.com/longbridge/gpui-kit).
+**See what's filling your Mac's disk, and clear it out safely.**
 
-Pick a volume or a folder (or drop one onto the window) and Spacee scans it, growing the chart as it goes, and draws each subfolder as a ring segment sized by the disk space it takes and coloured by what fills it, such as video, images, code or disk images. Hover a segment to see its name and size, click a folder to zoom in, and click the center to go back up.
+A fast, native macOS disk-usage visualiser built in Rust with [GPUI](https://www.gpui.rs/).
 
-To free space, drag segments or list rows into the Trash tray at the bottom, or right-click them and choose Mark for Trash, then press Move to Trash. Spacee only ever moves items to the Trash, never deletes them, and updates the sizes in place without a rescan. The right-click menu also has Reveal in Finder, Quick Look and Copy Path, and the space bar opens Quick Look on the hovered item.
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-0f141b?logo=apple&logoColor=white)](#requirements)
+[![Rust](https://img.shields.io/badge/Rust-1.88%2B-0f141b?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![GPUI](https://img.shields.io/badge/UI-GPUI-4ade9b?labelColor=0f141b)](https://www.gpui.rs/)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-4ade9b?labelColor=0f141b)](LICENSE.md)
 
-Scanning a whole volume adds a grey "Unaccounted space" item: the space the volume reports as used that no file accounts for, such as snapshots, purgeable space, the other system volumes in the container, and folders Spacee wasn't allowed to read.
+<img src="docs/screenshot.png" alt="Spacee showing a projects folder as an icicle chart, with its children listed by size and the Trash tray below" width="860">
 
-The roadmap and design live in [PLAN.md](PLAN.md).
+</div>
+
+## Features
+
+- **Icicle chart.** Every folder is a block sized by the disk space it takes and coloured by what fills it: video, audio, images, documents, archives and disk images, code and builds, or apps. Click a block to zoom in; click the bar on top or press Esc to go back up.
+- **Live scanning.** The chart grows while the scan runs, next to a file count, a files-per-second rate, how much has been found, and an estimate of the time left when scanning a whole volume.
+- **Volumes at a glance.** The startup disk comes first with its free space and how full it is, followed by drives, disk images and network shares, each with a Scan button.
+- **Safe cleanup.** Drag blocks or list rows into the Trash tray, or right-click and choose Mark for Trash, then press Move to Trash. Spacee only ever moves items to the Trash, never deletes them, and updates the sizes in place without a rescan.
+- **Finder shortcuts.** The right-click menu has Reveal in Finder, Quick Look and Copy Path, and the space bar opens Quick Look on the hovered item.
+- **Honest totals.** A whole-volume scan adds a grey "Unaccounted space" item for space the volume reports as used that no file accounts for, such as snapshots, purgeable space, the other system volumes in the container, and folders Spacee wasn't allowed to read.
+- **Dark and light.** Follows the system appearance, or pick one in Settings (⌘,).
+
+The roadmap and design notes live in [PLAN.md](PLAN.md).
 
 ## Requirements
 
 - macOS 13 or newer
 - Rust 1.88 or newer (`rustup update stable`)
-- Xcode, not just the Command Line Tools: GPUI compiles its Metal shaders at build time
+- Xcode, not just the Command Line Tools, because GPUI compiles its Metal shaders at build time
 - A code-signing identity for the bundled app (see [Signing](#signing))
 
-## Run
+## Quick start
 
 ```sh
-scripts/run.sh                    # debug build: build, bundle, sign, open
-PROFILE=release scripts/run.sh    # optimized build
-scripts/run.sh --no-open          # build and sign without launching
+git clone https://github.com/reinislejnieks/spacee.git
+cd spacee
+scripts/run.sh
 ```
 
-The bundle is written to `target/<profile>/Spacee.app`.
+| Command | What it does |
+| --- | --- |
+| `scripts/run.sh` | Debug build, bundle, sign and open |
+| `PROFILE=release scripts/run.sh` | Optimised build |
+| `scripts/run.sh --no-open` | Build and sign without launching |
 
-To open straight into a scan of a folder, run the binary inside the bundle with the path:
+The bundle is written to `target/<profile>/Spacee.app`. To open straight into a scan of a folder, run the binary inside the bundle with the path:
 
 ```sh
 target/release/Spacee.app/Contents/MacOS/spacee ~/Downloads
 ```
 
-Set `SPACEE_PERF=1` to log how long each sunburst paint takes.
-
-Settings (⌘,) has the Dark / Light / System appearance choice. It is saved in `~/Library/Application Support/com.rlejnieks.spacee/settings.json`.
+Set `SPACEE_PERF=1` to log how long each chart paint takes. Settings are saved in `~/Library/Application Support/com.rlejnieks.spacee/settings.json`.
 
 ## Install
 
@@ -56,9 +75,9 @@ The image is signed but not notarized, so another Mac's Gatekeeper will refuse i
 
 ### Full Disk Access
 
-Without Full Disk Access, macOS hides parts of `~/Library` and other protected folders, and the totals come out smaller than reality. The volumes screen and the scan view show a Grant Full Disk Access… button while the app lacks it. To grant it, open System Settings → Privacy & Security → Full Disk Access, add `Spacee.app`, and relaunch it.
+Without Full Disk Access, macOS hides parts of `~/Library` and other protected folders, and the totals come out smaller than reality. The volumes screen and the results show a Grant Full Disk Access… button while the app lacks it. To grant it, open System Settings → Privacy & Security → Full Disk Access, add `Spacee.app`, and relaunch it.
 
-The grant is tied to the app's signing identity. Builds signed with the same identity keep it; an ad-hoc signed build loses it on every rebuild.
+The grant is tied to the app's signing identity. Builds signed with the same identity keep it, and an ad-hoc signed build loses it on every rebuild.
 
 ## Signing
 
@@ -69,7 +88,7 @@ security find-identity -v -p codesigning     # list identities; use the 40-chara
 SPACEE_SIGN_IDENTITY=<hash> scripts/run.sh
 ```
 
-Sign by hash rather than by name: if the keychain holds two certificates with the same name, `codesign` refuses the ambiguous name. With no certificate at all, `SPACEE_SIGN_IDENTITY=-` signs ad hoc, at the cost of re-granting Full Disk Access after each build.
+Sign by hash rather than by name. If the keychain holds two certificates with the same name, `codesign` refuses the ambiguous name. With no certificate at all, `SPACEE_SIGN_IDENTITY=-` signs ad hoc, at the cost of re-granting Full Disk Access after each build.
 
 ## Command-line scanner
 
@@ -95,10 +114,16 @@ A pre-commit hook in `.githooks` runs `cargo fmt --check` and `cargo clippy -- -
 git config core.hooksPath .githooks
 ```
 
-The app icon, a ringed planet whose ring is split into the chart's file-type colours, lives in `crates/app/AppIcon.icns` and is drawn by `scripts/icon.py` (needs Pillow). Edit and rerun it to change the icon.
+The app icon lives in `crates/app/AppIcon.icns` and is drawn by `scripts/icon.py` (needs Pillow). Edit and rerun it to change the icon.
 
 The workspace has three crates:
 
-- `crates/scan` walks the filesystem in parallel and builds the size tree. It counts allocated bytes, counts hard links once, and does not follow symlinks or cross onto other volumes or mount points.
-- `crates/sunburst` turns the tree into ring geometry, merges slivers into "smaller objects", hit-tests the pointer, and computes zoom animation frames. It has no UI code.
-- `crates/app` is the GPUI app: the window, the painted sunburst, the breadcrumb and the side list.
+| Crate | Role |
+| --- | --- |
+| `crates/scan` | Walks the filesystem in parallel and builds the size tree. Counts allocated bytes, counts hard links once, and doesn't follow symlinks or cross onto other volumes or mount points. |
+| `crates/sunburst` | Turns the tree into a partition by depth and extent, merges slivers into "smaller objects", finds the block under the pointer, and computes zoom animation frames. No UI code. The name dates from the original radial chart. |
+| `crates/app` | The GPUI app: the window, the painted icicle chart, the volumes and scan screens, the children list and the Trash tray. |
+
+## License
+
+Spacee is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). You can use, modify and share it for any noncommercial purpose, including personal use, research, and use by charities, schools and public bodies. Commercial use needs a separate license from the author.
