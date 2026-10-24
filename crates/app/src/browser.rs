@@ -409,20 +409,15 @@ impl Browser {
             .p(px(14.))
             .pb_3()
             .child(
-                h_flex()
-                    .pb_3()
-                    .justify_between()
-                    .gap_3()
-                    .child(style::caption("Icicle", p))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(MONO)
-                            .text_size(px(11.5))
-                            .text_color(p.faint)
-                            .child("Click to zoom · Esc to go up"),
-                    ),
+                h_flex().pb_3().justify_end().child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .text_color(p.faint)
+                        .child("Click to zoom · Esc to go up"),
+                ),
             )
             .child(
                 div()

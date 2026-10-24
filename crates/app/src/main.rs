@@ -1096,16 +1096,13 @@ impl Spacee {
                     .flex_col()
                     .gap_3()
                     .child(
-                        h_flex()
-                            .justify_between()
-                            .child(style::caption("Icicle", p))
-                            .child(
-                                div()
-                                    .font_family(MONO)
-                                    .text_size(px(11.5))
-                                    .text_color(p.faint)
-                                    .child("Grows as folders finish"),
-                            ),
+                        h_flex().justify_end().child(
+                            div()
+                                .font_family(MONO)
+                                .text_size(px(11.5))
+                                .text_color(p.faint)
+                                .child("Grows as folders finish"),
+                        ),
                     )
                     .child(chart),
             )
