@@ -1,11 +1,10 @@
-use std::f32::consts::TAU;
 use std::time::Instant;
 
 use gpui_kit::component::{ActiveTheme, Icon, IconName, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use icicle::{DrawBlock, Target};
 use scan::{FileType, Kind, NodeId, Tree};
-use sunburst::{DrawArc, Target};
 
 use crate::browser::format_size;
 use crate::style::MONO;
@@ -15,8 +14,8 @@ const GAP: f32 = 3.0;
 const ROOT_HEIGHT: f32 = 40.0;
 
 /// Where an icicle drawn inside `bounds` puts things: a bar for the focused folder across
-/// the top, then one row per ring of the layout. An arc's angle becomes its horizontal
-/// position, so a ring's arcs fill the row from left to right.
+/// the top, then one row per level of the layout. A block's `x` and `width` are fractions
+/// of the chart's width, so each row's blocks fill it from left to right.
 #[derive(Clone, Copy)]
 pub struct Geometry {
     bounds: Bounds<Pixels>,
@@ -26,7 +25,7 @@ pub struct Geometry {
 /// What a point in the chart is over.
 pub enum Spot {
     Root,
-    Cell { depth: usize, angle: f32 },
+    Cell { depth: usize, x: f32 },
 }
 
 impl Geometry {
@@ -49,17 +48,17 @@ impl Geometry {
         )
     }
 
-    /// The block for `arc`, already shrunk by the gap to its neighbours. Rings may be
+    /// The bounds for `block`, already shrunk by the gap to its neighbours. Rows may be
     /// fractional while a zoom animates.
-    pub fn block(&self, arc: &DrawArc) -> Bounds<Pixels> {
+    pub fn block(&self, block: &DrawBlock) -> Bounds<Pixels> {
         let width = self.bounds.size.width.as_f32();
-        let x = self.bounds.left().as_f32() + arc.start / TAU * width;
-        let y = self.rows_top() + arc.inner * self.row;
+        let x = self.bounds.left().as_f32() + block.x * width;
+        let y = self.rows_top() + block.top * self.row;
         Bounds::new(
             point(px(x), px(y)),
             size(
-                px(arc.sweep / TAU * width - GAP),
-                px((arc.outer - arc.inner) * self.row - GAP),
+                px(block.width * width - GAP),
+                px((block.bottom - block.top) * self.row - GAP),
             ),
         )
     }
@@ -82,7 +81,7 @@ impl Geometry {
         let x = (position.x - self.bounds.left()).as_f32();
         (y >= 0.0).then(|| Spot::Cell {
             depth: (y / self.row) as usize,
-            angle: x / self.bounds.size.width.as_f32() * TAU,
+            x: x / self.bounds.size.width.as_f32(),
         })
     }
 
@@ -94,7 +93,7 @@ impl Geometry {
 
 pub fn paint(
     tree: &Tree,
-    arcs: &[DrawArc],
+    blocks: &[DrawBlock],
     hovered: Option<Target>,
     dark: bool,
     geometry: Geometry,
@@ -102,27 +101,27 @@ pub fn paint(
 ) {
     let start = Instant::now();
     paint_root_bar(dark, geometry, window);
-    if arcs.is_empty() {
+    if blocks.is_empty() {
         // An empty folder still shows where its chart would be.
         paint_block(geometry.first_row(), grey(dark), 0.12, false, window);
     }
-    for arc in arcs {
-        let bounds = geometry.block(arc);
+    for block in blocks {
+        let bounds = geometry.block(block);
         if bounds.size.width < px(1.) || bounds.size.height < px(1.) {
             continue;
         }
-        let file = matches!(arc.target, Target::Node(id) if matches!(tree.node(id).kind, Kind::File | Kind::Symlink));
-        let depth = arc.inner.max(0.0);
+        let file = matches!(block.target, Target::Node(id) if matches!(tree.node(id).kind, Kind::File | Kind::Symlink));
+        let depth = block.top.max(0.0);
         let alpha = if file {
             0.22 - depth * 0.02
         } else {
             0.34 - depth * 0.045
         };
-        let color = color(tree, arc.target, dark).opacity(arc.opacity);
-        paint_block(bounds, color, alpha, hovered == Some(arc.target), window);
+        let color = color(tree, block.target, dark).opacity(block.opacity);
+        paint_block(bounds, color, alpha, hovered == Some(block.target), window);
     }
     if std::env::var_os("SPACEE_PERF").is_some() {
-        eprintln!("paint: {} arcs in {:.2?}", arcs.len(), start.elapsed());
+        eprintln!("paint: {} blocks in {:.2?}", blocks.len(), start.elapsed());
     }
 }
 
@@ -155,10 +154,10 @@ fn paint_block(
         true => (alpha + 0.18, alpha + 0.12, 0.85),
         false => (alpha + 0.04, alpha - 0.03, 0.22),
     };
-    let radius = bounds.size.width.min(bounds.size.height).min(px(14.)) / 2.0;
+    let corner = bounds.size.width.min(bounds.size.height).min(px(14.)) / 2.0;
     window.paint_quad(quad(
         bounds,
-        radius.min(px(7.)),
+        corner.min(px(7.)),
         linear_gradient(
             180.,
             linear_color_stop(tint(top), 0.),
@@ -174,21 +173,22 @@ fn paint_block(
 /// `focus_size` is the size of the folder the whole width stands for.
 pub fn labels(
     tree: &Tree,
-    arcs: &[DrawArc],
+    blocks: &[DrawBlock],
     focus_size: u64,
     geometry: Geometry,
     cx: &App,
 ) -> Vec<AnyElement> {
     let dark = cx.theme().is_dark();
-    arcs.iter()
-        .filter_map(|arc| {
-            let bounds = geometry.local(geometry.block(arc));
+    blocks
+        .iter()
+        .filter_map(|block| {
+            let bounds = geometry.local(geometry.block(block));
             let (w, h) = (bounds.size.width.as_f32(), bounds.size.height.as_f32());
             if w <= 44.0 || h <= 20.0 {
                 return None;
             }
-            let fraction = arc.sweep / TAU;
-            let (name, bytes) = match arc.target {
+            let fraction = block.width;
+            let (name, bytes) = match block.target {
                 Target::Node(id) => (tree.node(id).name.to_string(), tree.node(id).size),
                 Target::Smaller { .. } => (
                     "Smaller objects".to_string(),
@@ -197,7 +197,7 @@ pub fn labels(
             };
             let percent = (w > 140.0 && h > 46.0).then(|| format!("{:.1}%", fraction * 100.0));
             let size = (w > 60.0 && h > 40.0).then(|| format_size(bytes));
-            let accent = color(tree, arc.target, dark);
+            let accent = color(tree, block.target, dark);
             Some(
                 div()
                     .absolute()
@@ -212,7 +212,7 @@ pub fn labels(
                     .flex()
                     .flex_col()
                     .justify_between()
-                    .opacity(arc.opacity)
+                    .opacity(block.opacity)
                     .overflow_hidden()
                     .child(
                         h_flex()

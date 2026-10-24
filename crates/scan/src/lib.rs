@@ -120,7 +120,7 @@ pub struct Progress {
 }
 
 /// The deepest directory level a running scan tracks for [`Progress::snapshot`]. The
-/// chart draws five rings, and anything deeper counts toward its ancestor at this level.
+/// chart draws five rows, and anything deeper counts toward its ancestor at this level.
 const LIVE_DEPTH: usize = 5;
 
 struct LiveDir {

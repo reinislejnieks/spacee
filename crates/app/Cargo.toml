@@ -6,7 +6,7 @@ version.workspace = true
 [dependencies]
 gpui-kit.workspace = true
 scan = { path = "../scan" }
-sunburst = { path = "../sunburst" }
+icicle = { path = "../icicle" }
 libc = "0.2"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSError", "NSFileManager", "NSString", "NSURL"] }
 serde = { version = "1", features = ["derive"] }

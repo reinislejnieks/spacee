@@ -2949,6 +2949,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "icicle"
+version = "0.1.0"
+dependencies = [
+ "scan",
+ "tempfile",
+]
+
+[[package]]
 name = "icu_collections"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5916,12 +5924,12 @@ name = "spacee"
 version = "0.1.0"
 dependencies = [
  "gpui-kit",
+ "icicle",
  "libc",
  "objc2-foundation 0.3.2",
  "scan",
  "serde",
  "serde_json",
- "sunburst",
  "tempfile",
 ]
 
@@ -6030,14 +6038,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "sunburst"
-version = "0.1.0"
-dependencies = [
- "scan",
- "tempfile",
-]
 
 [[package]]
 name = "svg_fmt"

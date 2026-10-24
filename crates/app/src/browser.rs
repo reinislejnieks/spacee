@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::f32::consts::TAU;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -9,8 +8,8 @@ use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::{Icon, IconName, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use icicle::{DrawBlock, Layout, Options, Target};
 use scan::{FileType, Kind, NodeId, Tree};
-use sunburst::{DrawArc, Layout, Options, Target};
 
 use crate::chart::{self, Spot};
 use crate::platform;
@@ -89,7 +88,7 @@ struct Zoom {
 enum Pick {
     /// The bar for the focused folder, which leads back up to its parent.
     Root,
-    Arc(Target),
+    Block(Target),
 }
 
 impl Browser {
@@ -298,9 +297,7 @@ impl Browser {
         }
         match self.geometry()?.spot(position)? {
             Spot::Root => Some(Pick::Root),
-            Spot::Cell { depth, angle } => {
-                Some(Pick::Arc(self.layout.arc_at(depth, angle)?.target))
-            }
+            Spot::Cell { depth, x } => Some(Pick::Block(self.layout.block_at(depth, x)?.target)),
         }
     }
 
@@ -313,7 +310,7 @@ impl Browser {
 
     fn mouse_move(&mut self, e: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
         let hovered = match self.pick(e.position) {
-            Some(Pick::Arc(target)) => Some(target),
+            Some(Pick::Block(target)) => Some(target),
             _ => None,
         };
         self.set_hovered(hovered, cx);
@@ -325,30 +322,30 @@ impl Browser {
         }
         match self.pick(e.position) {
             Some(Pick::Root) => self.focus_parent(cx),
-            Some(Pick::Arc(Target::Node(id))) => self.focus(id, cx),
+            Some(Pick::Block(Target::Node(id))) => self.focus(id, cx),
             _ => {}
         }
     }
 
-    /// The arcs to paint this frame, advancing the zoom animation if one is running.
-    fn frame(&mut self, window: &mut Window) -> Vec<DrawArc> {
+    /// The blocks to paint this frame, advancing the zoom animation if one is running.
+    fn frame(&mut self, window: &mut Window) -> Vec<DrawBlock> {
         let Some(zoom) = &self.zoom else {
-            return self.layout.draw_arcs();
+            return self.layout.draw_blocks();
         };
         let t = zoom.started.elapsed().as_secs_f32() / ZOOM.as_secs_f32();
         if t >= 1.0 {
             self.zoom = None;
-            return self.layout.draw_arcs();
+            return self.layout.draw_blocks();
         }
         window.request_animation_frame();
         let eased = 1.0 - (1.0 - t).powi(3);
-        sunburst::zoom(&self.tree, &zoom.from, &self.layout, eased)
+        icicle::zoom(&self.tree, &zoom.from, &self.layout, eased)
     }
 
-    /// A list row's child may be merged into "smaller objects"; highlight that arc instead.
-    fn hovered_arc(&self) -> Option<Target> {
+    /// A list row's child may be merged into "smaller objects"; highlight that block instead.
+    fn hovered_block(&self) -> Option<Target> {
         let hovered = self.hovered?;
-        if self.layout.arcs().any(|a| a.target == hovered) {
+        if self.layout.blocks().any(|b| b.target == hovered) {
             return Some(hovered);
         }
         match hovered {
@@ -362,8 +359,8 @@ impl Browser {
     }
 
     fn render_chart(&mut self, p: &Palette, window: &mut Window, cx: &mut Context<Self>) -> Div {
-        let arcs = self.frame(window);
-        let hovered = self.hovered_arc();
+        let blocks = self.frame(window);
+        let hovered = self.hovered_block();
         let dark = p.dark;
         let this = cx.entity();
         let dragged = self
@@ -374,7 +371,7 @@ impl Browser {
         // Labels are placed by the chart's size on the last frame.
         let overlay = self.geometry().map(|geometry| {
             let size = self.tree.node(focus).size;
-            let mut labels = chart::labels(&self.tree, &arcs, size, geometry, cx);
+            let mut labels = chart::labels(&self.tree, &blocks, size, geometry, cx);
             labels.push(chart::root_label(
                 self.display_name(focus),
                 self.root_detail(),
@@ -384,9 +381,9 @@ impl Browser {
             ));
             labels
         });
-        let types: HashSet<FileType> = arcs
+        let types: HashSet<FileType> = blocks
             .iter()
-            .filter_map(|a| match a.target {
+            .filter_map(|b| match b.target {
                 Target::Node(id) if self.tree.node(id).kind != Kind::Unaccounted => {
                     Some(self.tree.node(id).file_type)
                 }
@@ -450,7 +447,7 @@ impl Browser {
                                 let this = this.read(cx);
                                 let geometry =
                                     chart::Geometry::new(bounds, this.layout.options.max_depth);
-                                chart::paint(&this.tree, &arcs, hovered, dark, geometry, window)
+                                chart::paint(&this.tree, &blocks, hovered, dark, geometry, window)
                             },
                         )
                         .size_full(),
@@ -502,18 +499,18 @@ impl Browser {
         })
     }
 
-    /// The bytes `target` takes, working out the merged "smaller objects" from its arc.
+    /// The bytes `target` takes, working out the merged "smaller objects" from its block.
     fn size_of(&self, target: Target) -> u64 {
         match target {
             Target::Node(id) => self.tree.node(id).size,
             Target::Smaller { .. } => {
-                let sweep = self
+                let width = self
                     .layout
-                    .arcs()
-                    .find(|a| a.target == target)
-                    .map_or(0.0, |a| a.sweep);
+                    .blocks()
+                    .find(|b| b.target == target)
+                    .map_or(0.0, |b| b.width);
                 let focus = self.tree.node(self.layout.focus).size;
-                ((sweep / TAU) as f64 * focus as f64) as u64
+                (width as f64 * focus as f64) as u64
             }
         }
     }

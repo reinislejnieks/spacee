@@ -1,5 +1,5 @@
 [package]
-name = "sunburst"
+name = "icicle"
 edition.workspace = true
 version.workspace = true
 

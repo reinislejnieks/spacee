@@ -14,8 +14,8 @@ use gpui_kit::component::radio::RadioGroup;
 use gpui_kit::component::{Icon, IconName, Theme, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use icicle::{Layout, Options};
 use scan::Progress;
-use sunburst::{Layout, Options};
 
 use crate::browser::{Browser, format_count, format_size};
 use crate::settings::{Appearance, Settings};
@@ -844,8 +844,8 @@ impl Spacee {
                 max_depth: LIVE_LEVELS,
                 ..Options::default()
             };
-            let arcs = Layout::new(&tree, tree.root(), options).draw_arcs();
-            (tree, arcs)
+            let blocks = Layout::new(&tree, tree.root(), options).draw_blocks();
+            (tree, blocks)
         });
         if std::env::var_os("SPACEE_PERF").is_some()
             && let Some((tree, _)) = &live
@@ -867,8 +867,8 @@ impl Spacee {
         let overlay = self.live_bounds.map(|bounds| {
             let geometry = chart::Geometry::new(bounds, LIVE_LEVELS);
             let mut labels = match &live {
-                Some((tree, arcs)) => {
-                    chart::labels(tree, arcs, tree.node(tree.root()).size, geometry, cx)
+                Some((tree, blocks)) => {
+                    chart::labels(tree, blocks, tree.node(tree.root()).size, geometry, cx)
                 }
                 None => vec![],
             };
@@ -893,8 +893,8 @@ impl Spacee {
                     move |bounds, _, window, _| {
                         let geometry = chart::Geometry::new(bounds, LIVE_LEVELS);
                         match &live {
-                            Some((tree, arcs)) => {
-                                chart::paint(tree, arcs, None, dark, geometry, window)
+                            Some((tree, blocks)) => {
+                                chart::paint(tree, blocks, None, dark, geometry, window)
                             }
                             None => chart::paint_root_bar(dark, geometry, window),
                         }
@@ -923,7 +923,7 @@ impl Spacee {
             ));
         let bar = match done {
             Some(fraction) => track.child(fill.left_0().w(relative(fraction))),
-            // With no total to measure against, a stretch of the bar sweeps across it.
+            // With no total to measure against, a stretch of the bar slides across it.
             None => {
                 let phase = (elapsed * 0.5).fract() * 1.3 - 0.3;
                 track.child(fill.left(relative(phase)).w(relative(0.3)))

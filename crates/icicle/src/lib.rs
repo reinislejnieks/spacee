@@ -1,20 +1,20 @@
 use std::collections::HashSet;
-use std::f32::consts::TAU;
 
 use scan::{Kind, NodeId, Tree};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Options {
     pub max_depth: usize,
-    /// Children narrower than this (radians) are merged into one "smaller objects" arc.
-    pub min_sweep: f32,
+    /// Children narrower than this (a fraction of the focused folder's width) are merged
+    /// into one "smaller objects" block.
+    pub min_width: f32,
 }
 
 impl Default for Options {
     fn default() -> Self {
         Self {
             max_depth: 5,
-            min_sweep: 0.6_f32.to_radians(),
+            min_width: 0.6 / 360.0,
         }
     }
 }
@@ -29,73 +29,73 @@ pub enum Target {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Arc {
+pub struct Block {
     pub target: Target,
     pub depth: usize,
-    /// Radians clockwise from 12 o'clock.
-    pub start: f32,
-    pub sweep: f32,
+    /// Fractions of the focused folder's width, measured from its left edge.
+    pub x: f32,
+    pub width: f32,
 }
 
-impl Arc {
+impl Block {
     pub fn end(&self) -> f32 {
-        self.start + self.sweep
+        self.x + self.width
     }
 }
 
-/// An arc ready to paint. Radii are in ring units: ring `n` spans `n..n + 1`.
+/// A block ready to paint. `top` and `bottom` are in row units: row `n` spans `n..n + 1`.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct DrawArc {
+pub struct DrawBlock {
     pub target: Target,
-    pub inner: f32,
-    pub outer: f32,
-    pub start: f32,
-    pub sweep: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub x: f32,
+    pub width: f32,
     pub opacity: f32,
 }
 
-/// Arcs for one focused directory, one `Vec` per ring, each sorted by `start`.
+/// Blocks for one focused directory, one `Vec` per row, each sorted by `x`.
 #[derive(Debug)]
 pub struct Layout {
     pub focus: NodeId,
     pub options: Options,
-    pub rings: Vec<Vec<Arc>>,
+    pub rows: Vec<Vec<Block>>,
 }
 
 impl Layout {
     pub fn new(tree: &Tree, focus: NodeId, options: Options) -> Self {
-        let mut rings = vec![vec![]; options.max_depth];
-        place(tree, focus, 0, 0.0, TAU, &options, &mut rings);
+        let mut rows = vec![vec![]; options.max_depth];
+        place(tree, focus, 0, 0.0, 1.0, &options, &mut rows);
         Self {
             focus,
             options,
-            rings,
+            rows,
         }
     }
 
-    pub fn arcs(&self) -> impl Iterator<Item = &Arc> {
-        self.rings.iter().flatten()
+    pub fn blocks(&self) -> impl Iterator<Item = &Block> {
+        self.rows.iter().flatten()
     }
 
-    pub fn draw_arcs(&self) -> Vec<DrawArc> {
-        self.arcs()
-            .map(|a| DrawArc {
-                target: a.target,
-                inner: a.depth as f32,
-                outer: a.depth as f32 + 1.0,
-                start: a.start,
-                sweep: a.sweep,
+    pub fn draw_blocks(&self) -> Vec<DrawBlock> {
+        self.blocks()
+            .map(|b| DrawBlock {
+                target: b.target,
+                top: b.depth as f32,
+                bottom: b.depth as f32 + 1.0,
+                x: b.x,
+                width: b.width,
                 opacity: 1.0,
             })
             .collect()
     }
 
-    /// The arc in ring `depth` that covers `angle`, in radians from the start of the ring.
-    pub fn arc_at(&self, depth: usize, angle: f32) -> Option<&Arc> {
-        let ring = self.rings.get(depth)?;
-        let i = ring.partition_point(|a| a.start <= angle).checked_sub(1)?;
-        let arc = &ring[i];
-        (angle < arc.end()).then_some(arc)
+    /// The block in row `depth` that covers `x`, a fraction of the row's width.
+    pub fn block_at(&self, depth: usize, x: f32) -> Option<&Block> {
+        let row = self.rows.get(depth)?;
+        let i = row.partition_point(|b| b.x <= x).checked_sub(1)?;
+        let block = &row[i];
+        (x < block.end()).then_some(block)
     }
 }
 
@@ -103,29 +103,29 @@ fn place(
     tree: &Tree,
     id: NodeId,
     depth: usize,
-    start: f32,
-    sweep: f32,
+    x: f32,
+    width: f32,
     options: &Options,
-    rings: &mut [Vec<Arc>],
+    rows: &mut [Vec<Block>],
 ) {
     let node = tree.node(id);
-    if depth >= rings.len() || node.size == 0 {
+    if depth >= rows.len() || node.size == 0 {
         return;
     }
-    let mut cursor = start;
+    let mut cursor = x;
     let mut smaller = 0.0;
     for &child_id in &node.children {
         let child = tree.node(child_id);
-        let child_sweep = sweep * (child.size as f64 / node.size as f64) as f32;
-        if child_sweep < options.min_sweep {
-            smaller += child_sweep;
+        let child_width = width * (child.size as f64 / node.size as f64) as f32;
+        if child_width < options.min_width {
+            smaller += child_width;
             continue;
         }
-        rings[depth].push(Arc {
+        rows[depth].push(Block {
             target: Target::Node(child_id),
             depth,
-            start: cursor,
-            sweep: child_sweep,
+            x: cursor,
+            width: child_width,
         });
         if child.kind == Kind::Dir {
             place(
@@ -133,75 +133,72 @@ fn place(
                 child_id,
                 depth + 1,
                 cursor,
-                child_sweep,
+                child_width,
                 options,
-                rings,
+                rows,
             );
         }
-        cursor += child_sweep;
+        cursor += child_width;
     }
-    if smaller >= options.min_sweep {
-        rings[depth].push(Arc {
+    if smaller >= options.min_width {
+        rows[depth].push(Block {
             target: Target::Smaller { parent: id },
             depth,
-            start: cursor,
-            sweep: smaller,
+            x: cursor,
+            width: smaller,
         });
     }
 }
 
 /// The frame `t` (`0..=1`) of the zoom from `from` to `to`, where one focus is an
 /// ancestor of the other. The view moves like a camera from one focus to the other.
-/// Arcs present in both layouts move continuously; the rest fade, and anything
-/// pushed outside the circle is clipped.
-pub fn zoom(tree: &Tree, from: &Layout, to: &Layout, t: f32) -> Vec<DrawArc> {
+/// Blocks present in both layouts move continuously; the rest fade, and anything
+/// pushed outside the chart is clipped.
+pub fn zoom(tree: &Tree, from: &Layout, to: &Layout, t: f32) -> Vec<DrawBlock> {
     let (outer, inner, u) = if is_ancestor(tree, from.focus, to.focus) {
         (from, to, t)
     } else if is_ancestor(tree, to.focus, from.focus) {
         (to, from, 1.0 - t)
     } else {
-        return to.draw_arcs();
+        return to.draw_blocks();
     };
     let focus = span(tree, outer.focus, inner.focus);
     let camera = Span {
         depth: lerp(-1.0, focus.depth, u),
-        start: lerp(0.0, focus.start, u),
-        sweep: lerp(TAU, focus.sweep, u),
+        x: lerp(0.0, focus.x, u),
+        width: lerp(1.0, focus.width, u),
     };
     let max = outer.options.max_depth as f32;
-    let shared: HashSet<Target> = inner.arcs().map(|a| a.target).collect();
-    let in_outer: HashSet<Target> = outer.arcs().map(|a| a.target).collect();
+    let shared: HashSet<Target> = inner.blocks().map(|b| b.target).collect();
+    let in_outer: HashSet<Target> = outer.blocks().map(|b| b.target).collect();
 
-    let outer_arcs = outer
-        .arcs()
-        .filter(|a| !shared.contains(&a.target))
-        .map(|a| (a, a.depth as f32, a.start, a.sweep, 1.0 - u));
-    let inner_arcs = inner.arcs().map(|a| {
-        let opacity = if in_outer.contains(&a.target) { 1.0 } else { u };
-        let scale = focus.sweep / TAU;
-        let start = focus.start + a.start * scale;
+    let outer_blocks = outer
+        .blocks()
+        .filter(|b| !shared.contains(&b.target))
+        .map(|b| (b, b.depth as f32, b.x, b.width, 1.0 - u));
+    let inner_blocks = inner.blocks().map(|b| {
+        let opacity = if in_outer.contains(&b.target) { 1.0 } else { u };
         (
-            a,
-            a.depth as f32 + focus.depth + 1.0,
-            start,
-            a.sweep * scale,
+            b,
+            b.depth as f32 + focus.depth + 1.0,
+            focus.x + b.x * focus.width,
+            b.width * focus.width,
             opacity,
         )
     });
-    outer_arcs
-        .chain(inner_arcs)
-        .filter_map(|(a, depth, start, sweep, opacity)| {
-            let ring = depth - camera.depth - 1.0;
-            let to_view =
-                |angle: f32| ((angle - camera.start) / camera.sweep * TAU).clamp(0.0, TAU);
-            let (s, e) = (to_view(start), to_view(start + sweep));
-            let (r0, r1) = (ring.max(0.0), (ring + 1.0).min(max));
-            (opacity > 0.0 && e > s && r1 > r0).then_some(DrawArc {
-                target: a.target,
-                inner: r0,
-                outer: r1,
-                start: s,
-                sweep: e - s,
+    outer_blocks
+        .chain(inner_blocks)
+        .filter_map(|(b, depth, x, width, opacity)| {
+            let row = depth - camera.depth - 1.0;
+            let to_view = |x: f32| ((x - camera.x) / camera.width).clamp(0.0, 1.0);
+            let (left, right) = (to_view(x), to_view(x + width));
+            let (top, bottom) = (row.max(0.0), (row + 1.0).min(max));
+            (opacity > 0.0 && right > left && bottom > top).then_some(DrawBlock {
+                target: b.target,
+                top,
+                bottom,
+                x: left,
+                width: right - left,
                 opacity,
             })
         })
@@ -224,12 +221,12 @@ pub fn is_ancestor(tree: &Tree, ancestor: NodeId, mut node: NodeId) -> bool {
     }
 }
 
-/// Where `descendant` sits in the layout focused on `ancestor`, which itself is ring -1.
+/// Where `descendant` sits in the layout focused on `ancestor`, which itself is row -1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Span {
     depth: f32,
-    start: f32,
-    sweep: f32,
+    x: f32,
+    width: f32,
 }
 
 fn span(tree: &Tree, ancestor: NodeId, descendant: NodeId) -> Span {
@@ -239,7 +236,7 @@ fn span(tree: &Tree, ancestor: NodeId, descendant: NodeId) -> Span {
         path.push(node);
         node = tree.node(node).parent.expect("descendant of ancestor");
     }
-    let (mut depth, mut start, mut sweep) = (-1.0, 0.0_f64, TAU as f64);
+    let (mut depth, mut x, mut width) = (-1.0, 0.0_f64, 1.0_f64);
     for &child in path.iter().rev() {
         let parent = tree.node(tree.node(child).parent.unwrap());
         let before: u64 = parent
@@ -249,14 +246,14 @@ fn span(tree: &Tree, ancestor: NodeId, descendant: NodeId) -> Span {
             .map(|&c| tree.node(c).size)
             .sum();
         let size = parent.size.max(1) as f64;
-        start += sweep * before as f64 / size;
-        sweep *= tree.node(child).size as f64 / size;
+        x += width * before as f64 / size;
+        width *= tree.node(child).size as f64 / size;
         depth += 1.0;
     }
     Span {
         depth,
-        start: start as f32,
-        sweep: sweep as f32,
+        x: x as f32,
+        width: width as f32,
     }
 }
 
@@ -280,45 +277,49 @@ mod tests {
         (dir, tree)
     }
 
-    fn named(tree: &Tree, arc: &Arc) -> String {
-        match arc.target {
+    fn named(tree: &Tree, block: &Block) -> String {
+        match block.target {
             Target::Node(id) => tree.node(id).name.to_string(),
             Target::Smaller { .. } => "<smaller>".into(),
         }
     }
 
     #[test]
-    fn sweeps_are_proportional_to_size() {
+    fn widths_are_proportional_to_size() {
         let (_dir, tree) = fixture(&[("a", 400_000), ("b", 100_000)]);
         let layout = Layout::new(&tree, tree.root(), Options::default());
         let root = tree.node(tree.root()).size as f32;
-        for arc in &layout.rings[0] {
-            let Target::Node(id) = arc.target else {
+        for block in &layout.rows[0] {
+            let Target::Node(id) = block.target else {
                 panic!("unexpected aggregate")
             };
-            let expected = TAU * tree.node(id).size as f32 / root;
+            let expected = tree.node(id).size as f32 / root;
             assert!(
-                (arc.sweep - expected).abs() < 1e-4,
+                (block.width - expected).abs() < 1e-5,
                 "{}: {} vs {expected}",
-                named(&tree, arc),
-                arc.sweep
+                named(&tree, block),
+                block.width
             );
         }
     }
 
     #[test]
-    fn arcs_in_a_ring_are_contiguous_and_ordered() {
+    fn blocks_in_a_row_are_contiguous_and_ordered() {
         let (_dir, tree) = fixture(&[("a", 400_000), ("b", 200_000), ("c", 100_000)]);
         let layout = Layout::new(&tree, tree.root(), Options::default());
-        let ring = &layout.rings[0];
-        assert_eq!(ring[0].start, 0.0);
-        for pair in ring.windows(2) {
-            assert!((pair[0].end() - pair[1].start).abs() < 1e-6);
+        let row = &layout.rows[0];
+        assert_eq!(row[0].x, 0.0);
+        for pair in row.windows(2) {
+            assert!((pair[0].end() - pair[1].x).abs() < 1e-6);
         }
+        assert!(
+            (row.last().unwrap().end() - 1.0).abs() < 1e-6,
+            "row fills the width"
+        );
     }
 
     #[test]
-    fn children_nest_inside_their_parent_arc() {
+    fn children_nest_inside_their_parent_block() {
         let (_dir, tree) = fixture(&[
             ("big/x", 300_000),
             ("big/y", 200_000),
@@ -326,11 +327,11 @@ mod tests {
             ("other", 300_000),
         ]);
         let layout = Layout::new(&tree, tree.root(), Options::default());
-        for ring in layout.rings.windows(2) {
-            for child in &ring[1] {
-                let parent = ring[0]
+        for rows in layout.rows.windows(2) {
+            for child in &rows[1] {
+                let parent = rows[0]
                     .iter()
-                    .find(|p| p.start <= child.start + 1e-5 && child.end() <= p.end() + 1e-5);
+                    .find(|p| p.x <= child.x + 1e-6 && child.end() <= p.end() + 1e-6);
                 assert!(
                     parent.is_some(),
                     "{} has no enclosing parent",
@@ -338,24 +339,24 @@ mod tests {
                 );
             }
         }
-        assert!(!layout.rings[2].is_empty(), "big/deep/z reaches ring 2");
+        assert!(!layout.rows[2].is_empty(), "big/deep/z reaches row 2");
     }
 
     #[test]
-    fn tiny_children_merge_into_one_smaller_arc() {
+    fn tiny_children_merge_into_one_smaller_block() {
         let mut files = vec![("big", 10_000_000)];
         let names: Vec<String> = (0..50).map(|i| format!("tiny{i}")).collect();
         files.extend(names.iter().map(|n| (n.as_str(), 4_096)));
         let (_dir, tree) = fixture(&files);
 
         let layout = Layout::new(&tree, tree.root(), Options::default());
-        let ring = &layout.rings[0];
+        let row = &layout.rows[0];
         assert_eq!(
-            ring.iter().map(|a| named(&tree, a)).collect::<Vec<_>>(),
+            row.iter().map(|b| named(&tree, b)).collect::<Vec<_>>(),
             ["big", "<smaller>"]
         );
         assert_eq!(
-            ring[1].target,
+            row[1].target,
             Target::Smaller {
                 parent: tree.root()
             }
@@ -363,7 +364,7 @@ mod tests {
     }
 
     #[test]
-    fn rings_stop_at_max_depth() {
+    fn rows_stop_at_max_depth() {
         let (_dir, tree) = fixture(&[("a/b/c/d/e", 100_000)]);
         let layout = Layout::new(
             &tree,
@@ -373,38 +374,47 @@ mod tests {
                 ..Options::default()
             },
         );
-        assert_eq!(layout.rings.len(), 2);
-        assert_eq!(layout.arcs().map(|a| a.depth).max(), Some(1));
+        assert_eq!(layout.rows.len(), 2);
+        assert_eq!(layout.blocks().map(|b| b.depth).max(), Some(1));
     }
 
     #[test]
-    fn arc_at_finds_the_arc_covering_the_angle() {
+    fn block_at_finds_the_block_covering_x() {
         let (_dir, tree) = fixture(&[("a", 300_000), ("b", 100_000)]);
         let layout = Layout::new(&tree, tree.root(), Options::default());
-        for arc in &layout.rings[0] {
-            let angle = arc.start + arc.sweep / 2.0;
-            assert_eq!(layout.arc_at(0, angle), Some(arc), "{}", named(&tree, arc));
+        for block in &layout.rows[0] {
+            let x = block.x + block.width / 2.0;
+            assert_eq!(
+                layout.block_at(0, x),
+                Some(block),
+                "{}",
+                named(&tree, block)
+            );
         }
         assert_eq!(
-            named(&tree, layout.arc_at(0, 0.0).unwrap()),
+            named(&tree, layout.block_at(0, 0.0).unwrap()),
             "a",
             "largest first"
         );
-        assert_eq!(layout.arc_at(0, TAU), None);
-        assert_eq!(layout.arc_at(1, 0.1), None, "files have no ring-1 children");
-        assert_eq!(layout.arc_at(9, 0.1), None);
+        assert_eq!(layout.block_at(0, 1.0), None);
+        assert_eq!(
+            layout.block_at(1, 0.1),
+            None,
+            "files have no row-1 children"
+        );
+        assert_eq!(layout.block_at(9, 0.1), None);
     }
 
-    fn visible(mut arcs: Vec<DrawArc>) -> Vec<(Target, i32, i32, i32, i32)> {
-        let q = |v: f32| (v * 1000.0).round() as i32;
-        arcs.retain(|a| a.opacity > 0.0);
+    fn visible(mut blocks: Vec<DrawBlock>) -> Vec<(Target, i32, i32, i32, i32)> {
+        let q = |v: f32| (v * 10_000.0).round() as i32;
+        blocks.retain(|b| b.opacity > 0.0);
         assert!(
-            arcs.iter().all(|a| a.opacity == 1.0),
-            "an endpoint frame has no half-faded arcs"
+            blocks.iter().all(|b| b.opacity == 1.0),
+            "an endpoint frame has no half-faded blocks"
         );
-        let mut out: Vec<_> = arcs
+        let mut out: Vec<_> = blocks
             .iter()
-            .map(|a| (a.target, q(a.inner), q(a.outer), q(a.start), q(a.sweep)))
+            .map(|b| (b.target, q(b.top), q(b.bottom), q(b.x), q(b.width)))
             .collect();
         out.sort_by_key(|&(t, ..)| format!("{t:?}"));
         out
@@ -440,9 +450,12 @@ mod tests {
         for (from, to) in [(&parent, &child), (&child, &parent)] {
             assert_eq!(
                 visible(zoom(&tree, from, to, 0.0)),
-                visible(from.draw_arcs())
+                visible(from.draw_blocks())
             );
-            assert_eq!(visible(zoom(&tree, from, to, 1.0)), visible(to.draw_arcs()));
+            assert_eq!(
+                visible(zoom(&tree, from, to, 1.0)),
+                visible(to.draw_blocks())
+            );
         }
     }
 
@@ -454,42 +467,39 @@ mod tests {
         let deep = Layout::new(&tree, x, Options::default());
         assert_eq!(
             visible(zoom(&tree, &deep, &root, 1.0)),
-            visible(root.draw_arcs())
+            visible(root.draw_blocks())
         );
         assert_eq!(
             visible(zoom(&tree, &root, &deep, 1.0)),
-            visible(deep.draw_arcs())
+            visible(deep.draw_blocks())
         );
     }
 
     #[test]
-    fn mid_zoom_stays_inside_the_circle() {
+    fn mid_zoom_stays_inside_the_chart() {
         let (_dir, tree) = nested();
         let big = child_named(&tree, tree.root(), "big");
         let from = Layout::new(&tree, tree.root(), Options::default());
         let to = Layout::new(&tree, big, Options::default());
         for i in 0..=10 {
-            for a in zoom(&tree, &from, &to, i as f32 / 10.0) {
-                assert!(a.start >= 0.0 && a.start + a.sweep <= TAU + 1e-5, "{a:?}");
-                assert!(
-                    a.inner >= 0.0 && a.outer <= 5.0 && a.inner < a.outer,
-                    "{a:?}"
-                );
+            for b in zoom(&tree, &from, &to, i as f32 / 10.0) {
+                assert!(b.x >= 0.0 && b.x + b.width <= 1.0 + 1e-6, "{b:?}");
+                assert!(b.top >= 0.0 && b.bottom <= 5.0 && b.top < b.bottom, "{b:?}");
             }
         }
     }
 
     #[test]
-    fn zoomed_in_child_sits_where_its_arc_was() {
+    fn zoomed_in_child_sits_where_its_block_was() {
         let (_dir, tree) = nested();
         let big = child_named(&tree, tree.root(), "big");
         let layout = Layout::new(&tree, tree.root(), Options::default());
-        let arc = layout
-            .arcs()
-            .find(|a| a.target == Target::Node(big))
+        let block = layout
+            .blocks()
+            .find(|b| b.target == Target::Node(big))
             .unwrap();
         let s = span(&tree, tree.root(), big);
-        assert_eq!((s.depth, s.start), (0.0, arc.start));
-        assert!((s.sweep - arc.sweep).abs() < 1e-5);
+        assert_eq!((s.depth, s.x), (0.0, block.x));
+        assert!((s.width - block.width).abs() < 1e-6);
     }
 }
