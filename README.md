@@ -6,7 +6,7 @@
 
 A native macOS disk-usage app, written in Rust with [GPUI](https://www.gpui.rs/).
 
-[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-0f141b?logo=apple&logoColor=white)](#requirements)
+[![macOS 13+](https://img.shields.io/badge/macOS-13%2B-0f141b?logo=apple&logoColor=white)](#install)
 [![Rust](https://img.shields.io/badge/Rust-1.92%2B-0f141b?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![GPUI](https://img.shields.io/badge/UI-GPUI-4ade9b?labelColor=0f141b)](https://www.gpui.rs/)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-4ade9b?labelColor=0f141b)](LICENSE)
@@ -27,74 +27,14 @@ A native macOS disk-usage app, written in Rust with [GPUI](https://www.gpui.rs/)
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) describes how the app works.
 
-## Requirements
-
-- macOS 13 or later
-- Rust 1.92 or later (`rustup update stable`)
-- Xcode. The Command Line Tools are not sufficient, because GPUI compiles its Metal shaders during the build and `scripts/run.sh` uses `actool` for the icon.
-- Optional: a code-signing certificate, to keep Full Disk Access after each build (see [Signing](#signing))
-
-## Quick start
-
-```sh
-git clone https://github.com/reinislejnieks/spacee.git
-cd spacee
-scripts/run.sh
-```
-
-| Command | Result |
-| --- | --- |
-| `scripts/run.sh` | Debug build. Makes, signs and opens the app. |
-| `PROFILE=release scripts/run.sh` | Release build |
-| `scripts/run.sh --no-open` | Makes and signs the app, but does not open it |
-
-The app bundle is `target/<profile>/Spacee.app`. To start a scan of a folder immediately, give its path to the binary in the bundle:
-
-```sh
-target/release/Spacee.app/Contents/MacOS/spacee ~/Downloads
-```
-
-Spacee saves its settings in `~/Library/Application Support/com.rlejnieks.spacee/settings.json`.
-
 ## Install
 
-### Download
-
-1. Download `Spacee-<version>.dmg` from [Releases](https://github.com/reinislejnieks/spacee/releases). The app runs on Apple silicon and Intel Macs.
+1. Download `Spacee-<version>.dmg` from [Releases](https://github.com/reinislejnieks/spacee/releases). Spacee needs macOS 13 or later. It runs on Apple silicon and Intel Macs.
 2. Open the disk image and drag Spacee to Applications.
 3. Open Spacee. Spacee is not notarized, so macOS blocks it the first time. Click Done.
 4. Open System Settings > Privacy & Security. Below "Spacee" was blocked, click Open Anyway, then confirm.
 
 You do steps 3 and 4 one time for each version.
-
-### Build from source
-
-This command makes a release build and copies it to `/Applications`. If Spacee is open, the command quits it first. The command replaces an earlier copy.
-
-```sh
-./manage install
-```
-
-To make a disk image with a shortcut to Applications:
-
-```sh
-scripts/dmg.sh               # makes target/release/Spacee-<version>.dmg
-UNIVERSAL=1 scripts/dmg.sh   # the same, for Apple silicon and Intel
-```
-
-For `UNIVERSAL=1`, add the Intel target once: `rustup target add x86_64-apple-darwin`.
-
-### Release
-
-1. Set the new version in `crates/app/Info.plist` (`CFBundleShortVersionString`) and in `Cargo.toml`.
-2. Commit, then push a tag with the same version:
-
-   ```sh
-   git tag v0.2.0
-   git push origin v0.2.0
-   ```
-
-The Release workflow (`.github/workflows/release.yml`) makes a universal disk image and attaches it to a new GitHub release. If the tag does not match the version in `Info.plist`, the workflow stops.
 
 ### Full Disk Access
 
@@ -104,9 +44,63 @@ Without Full Disk Access, macOS hides parts of `~/Library` and other protected f
 2. Add `Spacee.app`.
 3. Quit and open Spacee again.
 
-macOS ties the access to the signing identity of the app. A build signed with the same certificate keeps the access. An ad-hoc signed build loses it after each rebuild. A downloaded version keeps the access until you install a new version.
+macOS ties the access to the signing identity of the app. A downloaded version keeps the access until you install a new version. For builds from source, see [Signing](#signing).
 
-## Signing
+## Build from source
+
+### Requirements
+
+- macOS 13 or later
+- Xcode. The Command Line Tools are not sufficient, because GPUI compiles its Metal shaders during the build and `scripts/run.sh` uses `actool` for the icon.
+- Rust 1.92 or later
+- Optional: a code-signing certificate, to keep Full Disk Access after each build (see [Signing](#signing))
+
+### Steps
+
+1. Install Xcode from the App Store. Open it one time to accept the license.
+2. If `xcode-select -p` does not show a path in `Xcode.app`, select Xcode:
+
+   ```sh
+   sudo xcode-select -s /Applications/Xcode.app
+   ```
+
+3. Install Rust from [rustup.rs](https://rustup.rs). If you already have Rust, update it with `rustup update stable`.
+4. Get the source code:
+
+   ```sh
+   git clone https://github.com/reinislejnieks/spacee.git
+   cd spacee
+   ```
+
+5. Make a release build and copy it to `/Applications`:
+
+   ```sh
+   ./manage install
+   ```
+
+   If Spacee is open, the command quits it first. The command replaces an earlier copy.
+
+The first build takes some minutes, because Cargo compiles GPUI and its dependencies.
+
+### Other build commands
+
+| Command | Result |
+| --- | --- |
+| `scripts/run.sh` | Debug build. Makes, signs and opens `target/debug/Spacee.app`. |
+| `PROFILE=release scripts/run.sh` | The same, as a release build in `target/release/Spacee.app` |
+| `scripts/run.sh --no-open` | Makes and signs the app, but does not open it |
+| `scripts/dmg.sh` | Makes `target/release/Spacee-<version>.dmg`, a disk image with a shortcut to Applications |
+| `UNIVERSAL=1 scripts/dmg.sh` | The same, for Apple silicon and Intel. Add the Intel target one time first: `rustup target add x86_64-apple-darwin`. |
+
+To start a scan of a folder immediately, give its path to the binary in the bundle:
+
+```sh
+target/release/Spacee.app/Contents/MacOS/spacee ~/Downloads
+```
+
+Spacee saves its settings in `~/Library/Application Support/com.rlejnieks.spacee/settings.json`.
+
+### Signing
 
 `scripts/run.sh` signs the app with the certificate in `SPACEE_SIGN_IDENTITY`. `./manage install` and `scripts/dmg.sh` use `scripts/run.sh`. If `SPACEE_SIGN_IDENTITY` is not set, the app is signed ad hoc. The app works, but it loses Full Disk Access after each rebuild.
 
@@ -154,6 +148,18 @@ The workspace has three crates. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) giv
 | `crates/scan` | Walks the file system in parallel and makes the size tree. Counts allocated bytes, counts hard links once, does not follow symbolic links and does not go into other volumes. |
 | `crates/icicle` | Makes the chart geometry from the tree, merges small items into "Smaller objects", finds the block under the pointer and calculates the zoom animation. Has no UI code. |
 | `crates/app` | The GPUI app: window, chart, volumes screen, scan screen, folder list and Trash tray. |
+
+## Release
+
+1. Set the new version in `crates/app/Info.plist` (`CFBundleShortVersionString`) and in `Cargo.toml`.
+2. Commit, then push a tag with the same version:
+
+   ```sh
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+The Release workflow (`.github/workflows/release.yml`) makes a universal disk image and attaches it to a new GitHub release. If the tag does not match the version in `Info.plist`, the workflow stops.
 
 ## License
 
