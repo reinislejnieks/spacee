@@ -1073,7 +1073,7 @@ pub fn list_card(name: &str, count: usize, p: &Palette, body: impl IntoElement) 
                         .truncate()
                         .text_size(px(16.))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .child(format!("Children of {name}")),
+                        .child(format!("Inside {name}")),
                 )
                 .child(style::tag(format_count(count as u64), Tone::Neutral, p))
                 .child(div().flex_1())
