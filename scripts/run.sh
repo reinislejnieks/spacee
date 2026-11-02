@@ -9,15 +9,26 @@ IDENTITY="${SPACEE_SIGN_IDENTITY:--}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/target/$PROFILE/Spacee.app"
 
-if [[ "$PROFILE" == release ]]; then
-  cargo build --manifest-path "$ROOT/Cargo.toml" -p spacee --release
+BUILD=(cargo build --manifest-path "$ROOT/Cargo.toml" -p spacee)
+[[ "$PROFILE" == release ]] && BUILD+=(--release)
+
+# UNIVERSAL=1 builds for Apple silicon and Intel and joins the two binaries.
+if [[ "${UNIVERSAL:-}" == 1 ]]; then
+  BIN="$ROOT/target/$PROFILE/spacee-universal"
+  for TARGET in aarch64-apple-darwin x86_64-apple-darwin; do
+    "${BUILD[@]}" --target "$TARGET"
+  done
+  lipo -create -output "$BIN" \
+    "$ROOT/target/aarch64-apple-darwin/$PROFILE/spacee" \
+    "$ROOT/target/x86_64-apple-darwin/$PROFILE/spacee"
 else
-  cargo build --manifest-path "$ROOT/Cargo.toml" -p spacee
+  BIN="$ROOT/target/$PROFILE/spacee"
+  "${BUILD[@]}"
 fi
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$ROOT/target/$PROFILE/spacee" "$APP/Contents/MacOS/spacee"
+cp "$BIN" "$APP/Contents/MacOS/spacee"
 cp "$ROOT/crates/app/Info.plist" "$APP/Contents/Info.plist"
 # Compiles the Icon Composer icon into Assets.car, which has the light and dark icons
 # for macOS 26, and AppIcon.icns for older systems.

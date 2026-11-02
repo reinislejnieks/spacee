@@ -1,0 +1,39 @@
+# Builds a universal Spacee DMG for each pushed version tag (v0.2.0) and attaches it
+# to a GitHub release. The app is signed ad hoc and not notarized.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    # Xcode 26 compiles the Icon Composer icon.
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check that the tag matches the app version
+        run: |
+          VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' crates/app/Info.plist)"
+          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match Info.plist version $VERSION" >&2
+            exit 1
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the DMG
+        run: UNIVERSAL=1 scripts/dmg.sh
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" target/release/Spacee-*.dmg --title "Spacee ${GITHUB_REF_NAME#v}" --generate-notes

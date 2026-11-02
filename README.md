@@ -58,6 +58,17 @@ Spacee saves its settings in `~/Library/Application Support/com.rlejnieks.spacee
 
 ## Install
 
+### Download
+
+1. Download `Spacee-<version>.dmg` from [Releases](https://github.com/reinislejnieks/spacee/releases). The app runs on Apple silicon and Intel Macs.
+2. Open the disk image and drag Spacee to Applications.
+3. Open Spacee. Spacee is not notarized, so macOS blocks it the first time. Click Done.
+4. Open System Settings > Privacy & Security. Below "Spacee" was blocked, click Open Anyway, then confirm.
+
+You do steps 3 and 4 one time for each version.
+
+### Build from source
+
 This command makes a release build and copies it to `/Applications`. If Spacee is open, the command quits it first. The command replaces an earlier copy.
 
 ```sh
@@ -67,10 +78,23 @@ This command makes a release build and copies it to `/Applications`. If Spacee i
 To make a disk image with a shortcut to Applications:
 
 ```sh
-scripts/dmg.sh    # makes target/release/Spacee-<version>.dmg
+scripts/dmg.sh               # makes target/release/Spacee-<version>.dmg
+UNIVERSAL=1 scripts/dmg.sh   # the same, for Apple silicon and Intel
 ```
 
-The disk image is not notarized. Gatekeeper on other Macs blocks it. To share a build, sign it with a Developer ID Application certificate and notarize it.
+For `UNIVERSAL=1`, add the Intel target once: `rustup target add x86_64-apple-darwin`.
+
+### Release
+
+1. Set the new version in `crates/app/Info.plist` (`CFBundleShortVersionString`) and in `Cargo.toml`.
+2. Commit, then push a tag with the same version:
+
+   ```sh
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+
+The Release workflow (`.github/workflows/release.yml`) makes a universal disk image and attaches it to a new GitHub release. If the tag does not match the version in `Info.plist`, the workflow stops.
 
 ### Full Disk Access
 
@@ -80,7 +104,7 @@ Without Full Disk Access, macOS hides parts of `~/Library` and other protected f
 2. Add `Spacee.app`.
 3. Quit and open Spacee again.
 
-macOS ties the access to the signing identity of the app. A build signed with the same certificate keeps the access. An ad-hoc signed build loses it after each rebuild.
+macOS ties the access to the signing identity of the app. A build signed with the same certificate keeps the access. An ad-hoc signed build loses it after each rebuild. A downloaded version keeps the access until you install a new version.
 
 ## Signing
 
