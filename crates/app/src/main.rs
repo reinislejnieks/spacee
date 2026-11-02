@@ -780,7 +780,13 @@ impl Spacee {
             .into_any_element()
     }
 
-    fn render_scan(&self, width: Pixels, p: &Palette, cx: &mut Context<Self>) -> AnyElement {
+    fn render_scan(
+        &self,
+        width: Pixels,
+        narrow: bool,
+        p: &Palette,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         match &self.scan {
             None => self.render_volumes(width, p, cx),
             Some(Scan::Done(browser)) => browser.clone().into_any_element(),
@@ -824,16 +830,16 @@ impl Spacee {
                             ),
                     ),
             ),
-            Some(Scan::Running(running)) => self.render_running(running, width, p, cx),
+            Some(Scan::Running(running)) => self.render_running(running, narrow, p, cx),
         }
     }
 
-    /// The scan's progress, and the folders found so far as an icicle that grows while it
-    /// runs.
+    /// The results page for the folders found so far, with the scan's progress in place of
+    /// the breadcrumb and the icicle growing while it runs.
     fn render_running(
         &self,
         running: &Running,
-        width: Pixels,
+        narrow: bool,
         p: &Palette,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -881,8 +887,27 @@ impl Spacee {
             ));
             labels
         });
+        let types = live
+            .as_ref()
+            .map(|(tree, blocks)| browser::file_types(tree, blocks))
+            .unwrap_or_default();
+        let rows: Vec<Div> = live
+            .as_ref()
+            .map(|(tree, _)| {
+                let root = tree.node(tree.root());
+                root.children
+                    .iter()
+                    .map(|&id| {
+                        div()
+                            .h(px(browser::ROW_HEIGHT))
+                            .pb(px(6.))
+                            .child(browser::row(tree, id, root.size, false, true, p))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let this = cx.entity();
-        let chart = div()
+        let area = div()
             .relative()
             .flex_1()
             .min_h_0()
@@ -903,209 +928,130 @@ impl Spacee {
                 .size_full(),
             )
             .children(overlay.into_iter().flatten());
+        let chart = browser::chart_card("Grows as folders finish", types, p, area);
 
-        let track = div()
-            .relative()
-            .h(px(8.))
-            .w_full()
-            .rounded_full()
-            .bg(p.well)
-            .overflow_hidden();
-        let fill = div()
-            .absolute()
-            .top_0()
-            .bottom_0()
-            .rounded_full()
-            .bg(linear_gradient(
-                90.,
-                linear_color_stop(p.mint.opacity(0.7), 0.),
-                linear_color_stop(p.mint, 1.),
-            ));
-        let bar = match done {
-            Some(fraction) => track.child(fill.left_0().w(relative(fraction))),
+        let fill = div().absolute().top_0().bottom_0().bg(linear_gradient(
+            90.,
+            linear_color_stop(p.mint.opacity(0.7), 0.),
+            linear_color_stop(p.mint, 1.),
+        ));
+        let fill = match done {
+            Some(fraction) => fill.left_0().w(relative(fraction)),
             // With no total to measure against, a stretch of the bar slides across it.
             None => {
                 let phase = (elapsed * 0.5).fract() * 1.3 - 0.3;
-                track.child(fill.left(relative(phase)).w(relative(0.3)))
+                fill.left(relative(phase)).w(relative(0.3))
             }
         };
-        let (value, unit) = split_size(bytes);
-        let stat = |label: &'static str, tag: Option<Div>| {
-            style::card(p)
-                .min_w_0()
-                .px(px(18.))
-                .py_4()
-                .flex()
-                .flex_col()
-                .gap_1p5()
-                .child(
-                    h_flex()
-                        .h(px(20.))
-                        .justify_between()
-                        .gap_2()
-                        .child(style::caption(label, p))
-                        .children(tag),
-                )
-        };
-        let big = |text: String| {
-            div()
-                .text_size(px(34.))
-                .line_height(px(38.))
-                .font_weight(FontWeight::SEMIBOLD)
-                .child(text)
-        };
-        let small = |text: String| {
-            div()
-                .truncate()
-                .font_family(MONO)
-                .text_size(px(11.5))
-                .text_color(p.faint)
-                .child(text)
-        };
-        let rate = files as f32 / elapsed.max(0.1);
-        let columns = if width < px(720.) { 1 } else { 3 };
-
-        v_flex()
-            .id("running")
-            .size_full()
-            .overflow_y_scroll()
-            .px_5()
-            .pt(px(18.))
-            .pb_5()
-            .gap(px(14.))
-            .child(
-                style::glow_card(p)
-                    .flex_none()
-                    .px_6()
-                    .py(px(22.))
-                    .flex()
-                    .flex_col()
-                    .gap_4()
-                    .child(
-                        h_flex()
-                            .gap(px(14.))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .truncate()
-                                    .text_size(px(26.))
-                                    .font_weight(FontWeight::BOLD)
-                                    .child(format!("Scanning {}", running.name).to_uppercase()),
-                            )
-                            .child(style::dot_tag("Live", Tone::Mint, p))
-                            .child(div().flex_1())
-                            .child(
-                                style::button("cancel", style::Button::Normal, p)
-                                    .child(Icon::new(IconName::Close).size_3p5())
-                                    .child("Cancel")
-                                    .child(style::kbd("Esc", p))
-                                    .on_click(cx.listener(|this, _, _, cx| this.stop_scanning(cx))),
-                            ),
-                    )
-                    .child(bar),
-            )
+        // Sits where the breadcrumb will, at its height, with the bar along its bottom edge.
+        let header = style::card(p)
+            .flex_none()
+            .relative()
+            .overflow_hidden()
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_4()
+            .py(px(9.))
+            .min_h(px(56.))
+            .child(style::dot_tag("Live", Tone::Mint, p))
             .child(
                 div()
                     .flex_none()
-                    .grid()
-                    .grid_cols(columns)
-                    .gap_3()
-                    .child(
-                        stat(
-                            "Files",
-                            Some(style::tag(
-                                format!("{}/s", format_count(rate as u64)),
-                                Tone::Mint,
-                                p,
-                            )),
-                        )
-                        .child(big(format_count(files)))
-                        .child(small("Folders are sized as they finish".into())),
-                    )
-                    .child(
-                        stat(
-                            "Found",
-                            done.map(|f| style::tag(format!("{:.0}%", f * 100.0), Tone::Mint, p)),
-                        )
-                        .child(
-                            h_flex()
-                                .items_baseline()
-                                .gap_1()
-                                .child(big(value))
-                                .child(div().text_size(px(15.)).text_color(p.dim).child(unit)),
-                        )
-                        .child(small(match running.volume_used {
-                            Some(used) => format!("of {} used", format_size(used)),
-                            None => "in this folder so far".into(),
-                        })),
-                    )
-                    .child(
-                        stat(
-                            "Elapsed",
-                            eta.map(|eta| {
-                                style::tag(format!("ETA ~{}", format_duration(eta)), Tone::Blue, p)
-                            }),
-                        )
-                        .child(big(format_duration(elapsed)))
-                        .child(small(match eta {
-                            Some(_) => "Estimated from the space used".into(),
-                            None => "No estimate for a folder".into(),
-                        })),
-                    ),
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("Scanning {}", running.name)),
             )
             .child(
-                h_flex()
-                    .flex_none()
-                    .gap_3()
-                    .px_4()
-                    .py(px(11.))
-                    .rounded(px(14.))
-                    .border_1()
-                    .border_color(p.line)
-                    .bg(p.inset)
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .gap_2()
-                            .child(style::dot(p.mint, px(7.)))
-                            .child(
-                                div()
-                                    .text_size(px(11.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(p.mint)
-                                    .child("READING"),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(MONO)
-                            .text_size(px(12.5))
-                            .text_color(p.caption)
-                            .child(progress.current().display().to_string()),
-                    ),
-            )
-            .child(
-                style::card(p)
+                div()
                     .flex_1()
-                    .min_h(px(320.))
-                    .p(px(14.))
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .child(
-                        h_flex().justify_end().child(
-                            div()
-                                .font_family(MONO)
-                                .text_size(px(11.5))
-                                .text_color(p.faint)
-                                .child("Grows as folders finish"),
-                        ),
-                    )
-                    .child(chart),
+                    .min_w_0()
+                    .truncate()
+                    .font_family(MONO)
+                    .text_size(px(12.))
+                    .text_color(p.faint)
+                    .child(progress.current().display().to_string()),
             )
+            .child(
+                style::button("cancel", style::Button::Normal, p)
+                    .child(Icon::new(IconName::Close).size_3p5())
+                    .child("Cancel")
+                    .child(style::kbd("Esc", p))
+                    .on_click(cx.listener(|this, _, _, cx| this.stop_scanning(cx))),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(3.))
+                    .bg(p.well)
+                    .child(fill),
+            );
+
+        let rate = files as f32 / elapsed.max(0.1);
+        let stats = browser::stats([
+            browser::stat(
+                "Found so far",
+                format_size(bytes),
+                p.fg,
+                match (done, running.volume_used) {
+                    (Some(f), Some(used)) => {
+                        format!("{:.0}% of {} used", f * 100.0, format_size(used))
+                    }
+                    _ => "in this folder".into(),
+                },
+                p,
+            ),
+            browser::stat(
+                "Files",
+                format_count(files),
+                p.fg,
+                format!("{}/s", format_count(rate as u64)),
+                p,
+            ),
+            browser::stat(
+                "Elapsed",
+                format_duration(elapsed),
+                p.fg,
+                match eta {
+                    Some(eta) => format!("about {} left", format_duration(eta)),
+                    None => "No estimate for a folder".into(),
+                },
+                p,
+            ),
+        ]);
+        let list = browser::list_card(
+            &running.name,
+            rows.len(),
+            p,
+            v_flex()
+                .id("children")
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .children(rows),
+        );
+        let tray = style::card(p)
+            .flex_none()
+            .px_4()
+            .py(px(14.))
+            .opacity(0.5)
+            .child(browser::tray_header(
+                "You can mark items for the Trash when the scan finishes.",
+                div()
+                    .flex_none()
+                    .font_family(MONO)
+                    .text_size(px(12.))
+                    .text_color(p.dim)
+                    .child("Nothing marked"),
+                p,
+            ));
+
+        browser::page("running", narrow)
+            .child(header)
+            .child(browser::content(chart, stats, list, narrow))
+            .child(tray)
             .into_any_element()
     }
 
@@ -1164,7 +1110,7 @@ impl Render for Spacee {
         let width = viewport - px(if collapsed { 68. } else { 236. });
         let page = match self.page {
             Page::Volumes => self.render_volumes(width, &p, cx),
-            Page::Scan => self.render_scan(width, &p, cx),
+            Page::Scan => self.render_scan(width, browser::is_narrow(window), &p, cx),
             Page::Settings => self.render_settings(&p, cx),
         };
         h_flex()
@@ -1249,15 +1195,6 @@ fn centered(content: impl IntoElement) -> AnyElement {
         .justify_center()
         .child(content)
         .into_any_element()
-}
-
-/// The size's number and unit apart, such as ("380", "GB").
-fn split_size(bytes: u64) -> (String, String) {
-    let size = format_size(bytes);
-    match size.split_once(' ') {
-        Some((value, unit)) => (value.into(), unit.into()),
-        None => (size, String::new()),
-    }
 }
 
 fn format_duration(seconds: f32) -> String {

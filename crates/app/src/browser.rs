@@ -19,7 +19,7 @@ actions!(browser, [GoUp, QuickLook]);
 
 const ZOOM: Duration = Duration::from_millis(350);
 /// A row of the children list, with the gap below it.
-const ROW_HEIGHT: f32 = 70.0;
+pub const ROW_HEIGHT: f32 = 70.0;
 
 /// The icicle, breadcrumb, children list and Trash tray for one finished scan.
 pub struct Browser {
@@ -381,90 +381,48 @@ impl Browser {
             ));
             labels
         });
-        let types: HashSet<FileType> = blocks
-            .iter()
-            .filter_map(|b| match b.target {
-                Target::Node(id) if self.tree.node(id).kind != Kind::Unaccounted => {
-                    Some(self.tree.node(id).file_type)
-                }
-                _ => None,
-            })
-            .collect();
-        let legend = FileType::ALL
-            .into_iter()
-            .filter(|t| types.contains(t))
-            .map(|t| {
-                h_flex()
-                    .gap(px(7.))
-                    .child(style::dot(chart::swatch(t, dark), px(9.)))
-                    .child(t.label())
-            });
-
-        style::card(p)
-            .flex()
-            .flex_col()
-            .p(px(14.))
-            .pb_3()
-            .child(
-                h_flex().pb_3().justify_end().child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .text_color(p.faint)
-                        .child("Click to zoom · Esc to go up"),
-                ),
-            )
-            .child(
-                div()
-                    .id("chart")
-                    .relative()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    .on_mouse_move(cx.listener(Self::mouse_move))
-                    .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
-                    .when_some(dragged, |chart, dragged| {
-                        chart.on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
-                    })
-                    .child(
-                        canvas(
-                            {
-                                let this = this.clone();
-                                move |bounds, window, cx| {
-                                    let moved = this.update(cx, |this, _| {
-                                        this.chart_bounds.replace(bounds) != Some(bounds)
-                                    });
-                                    // A notify while painting is lost; render again next
-                                    // frame so the labels follow.
-                                    if moved {
-                                        window.request_animation_frame();
-                                    }
+        let types = file_types(&self.tree, &blocks);
+        chart_card(
+            "Click to zoom · Esc to go up",
+            types,
+            p,
+            div()
+                .id("chart")
+                .relative()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .on_mouse_move(cx.listener(Self::mouse_move))
+                .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+                .when_some(dragged, |chart, dragged| {
+                    chart.on_drag(dragged, |d, _, _, cx| cx.new(|_| d.clone()))
+                })
+                .child(
+                    canvas(
+                        {
+                            let this = this.clone();
+                            move |bounds, window, cx| {
+                                let moved = this.update(cx, |this, _| {
+                                    this.chart_bounds.replace(bounds) != Some(bounds)
+                                });
+                                // A notify while painting is lost; render again next
+                                // frame so the labels follow.
+                                if moved {
+                                    window.request_animation_frame();
                                 }
-                            },
-                            move |bounds, _, window, cx| {
-                                let this = this.read(cx);
-                                let geometry =
-                                    chart::Geometry::new(bounds, this.layout.options.max_depth);
-                                chart::paint(&this.tree, &blocks, hovered, dark, geometry, window)
-                            },
-                        )
-                        .size_full(),
+                            }
+                        },
+                        move |bounds, _, window, cx| {
+                            let this = this.read(cx);
+                            let geometry =
+                                chart::Geometry::new(bounds, this.layout.options.max_depth);
+                            chart::paint(&this.tree, &blocks, hovered, dark, geometry, window)
+                        },
                     )
-                    .children(overlay.into_iter().flatten()),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .flex_wrap()
-                    .gap_x(px(18.))
-                    .gap_y_1p5()
-                    .pt_3()
-                    .text_size(px(12.5))
-                    .text_color(p.caption)
-                    .children(legend),
-            )
+                    .size_full(),
+                )
+                .children(overlay.into_iter().flatten()),
+        )
     }
 
     /// Where the focused folder sits inside the scan, or, for the scan's top folder and
@@ -678,29 +636,7 @@ impl Browser {
                 let id = focus.children[i];
                 let node = self.tree.node(id);
                 let target = Target::Node(id);
-                let color = chart::node_color(&self.tree, id, p.dark);
-                let fraction = node.size as f32 / focus.size.max(1) as f32;
-                let hovered = self.hovered == Some(target);
-                let (icon, detail): (Icon, String) = match node.kind {
-                    Kind::Dir => (
-                        IconName::Folder.into(),
-                        format!(
-                            "{} · {}",
-                            format_files(node.file_count),
-                            node.file_type.label().to_lowercase()
-                        ),
-                    ),
-                    Kind::Unaccounted => (
-                        AppIcon::CircleDashed.into(),
-                        "not visible to the scan".into(),
-                    ),
-                    Kind::File | Kind::Symlink => {
-                        (IconName::File.into(), node.file_type.label().to_lowercase())
-                    }
-                };
                 let unaccounted = node.kind == Kind::Unaccounted;
-                let (wash, line_strong) = (p.wash, p.line_strong);
-
                 div()
                     .id(("row", i))
                     .w_full()
@@ -720,74 +656,15 @@ impl Browser {
                         })
                     })
                     .child(
-                        h_flex()
-                            .size_full()
-                            .gap_3()
-                            .px(px(11.))
-                            .rounded(px(11.))
-                            .border_1()
-                            .border_color(transparent_black())
-                            .bg(wash.opacity(0.016))
-                            .cursor_pointer()
-                            .when(hovered, |row| {
-                                row.bg(wash.opacity(0.035)).border_color(line_strong)
-                            })
-                            .child(style::tile(icon, color, px(34.), &p))
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .gap(px(2.))
-                                    .child(
-                                        h_flex()
-                                            .gap_3()
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .truncate()
-                                                    .font_weight(FontWeight::MEDIUM)
-                                                    .when(unaccounted, |name| {
-                                                        name.text_color(p.dim)
-                                                    })
-                                                    .child(node.name.to_string()),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_none()
-                                                    .font_family(MONO)
-                                                    .text_size(px(13.))
-                                                    .font_weight(FontWeight::SEMIBOLD)
-                                                    .child(format_size(node.size)),
-                                            ),
-                                    )
-                                    .child(
-                                        h_flex()
-                                            .gap_3()
-                                            .font_family(MONO)
-                                            .text_size(px(11.5))
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .truncate()
-                                                    .text_color(p.faint)
-                                                    .child(detail),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex_none()
-                                                    .text_color(color)
-                                                    .child(format!("{:.1}%", fraction * 100.0)),
-                                            ),
-                                    )
-                                    .child(div().pt_1().child(style::bar(
-                                        fraction,
-                                        color,
-                                        px(4.),
-                                        &p,
-                                    ))),
-                            ),
+                        row(
+                            &self.tree,
+                            id,
+                            focus.size,
+                            self.hovered == Some(target),
+                            false,
+                            &p,
+                        )
+                        .cursor_pointer(),
                     )
             })
             .collect()
@@ -796,37 +673,11 @@ impl Browser {
     fn render_list(&self, p: &Palette, cx: &mut Context<Self>) -> Div {
         let focus = self.layout.focus;
         let count = self.tree.node(focus).children.len();
-        style::card(p)
-            .flex()
-            .flex_col()
-            .px_3()
-            .pt(px(14.))
-            .pb(px(10.))
-            .child(
-                h_flex()
-                    .px_1()
-                    .pb_3()
-                    .gap_2()
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(16.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(format!("Children of {}", self.display_name(focus))),
-                    )
-                    .child(style::tag(format_count(count as u64), Tone::Neutral, p))
-                    .child(div().flex_1())
-                    .child(
-                        div()
-                            .flex_none()
-                            .font_family(MONO)
-                            .text_size(px(11.5))
-                            .text_color(p.faint)
-                            .child("By size ↓"),
-                    ),
-            )
-            .child(match self.empty_message() {
+        list_card(
+            &self.display_name(focus),
+            count,
+            p,
+            match self.empty_message() {
                 Some(message) => v_flex()
                     .flex_1()
                     .items_center()
@@ -843,41 +694,12 @@ impl Browser {
                     .flex_1()
                     .min_h_0()
                     .into_any_element(),
-            })
+            },
+        )
     }
 
     fn render_stats(&self, p: &Palette) -> Div {
         let focus = self.tree.node(self.layout.focus);
-        let stat = |label: &'static str, value: String, color: Hsla, detail: String| {
-            style::card(p)
-                .min_w_0()
-                .px(px(14.))
-                .py_3()
-                .child(
-                    div()
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .text_color(p.dim)
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .mt_1()
-                        .truncate()
-                        .text_size(px(22.))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(color)
-                        .child(value),
-                )
-                .child(
-                    div()
-                        .truncate()
-                        .font_family(MONO)
-                        .text_size(px(11.5))
-                        .text_color(p.faint)
-                        .child(detail),
-                )
-        };
         let largest = focus
             .children
             .iter()
@@ -885,18 +707,15 @@ impl Browser {
             .find(|&c| self.tree.node(c).kind != Kind::Unaccounted);
         let marked: u64 = self.marked.iter().map(|&c| self.tree.node(c).size).sum();
         let count = self.marked.len();
-        div()
-            .flex_none()
-            .grid()
-            .grid_cols(3)
-            .gap_3()
-            .child(stat(
+        stats([
+            stat(
                 "This folder",
                 format_size(focus.size),
                 p.fg,
                 format_files(focus.file_count),
-            ))
-            .child(match largest {
+                p,
+            ),
+            match largest {
                 Some(id) => {
                     let node = self.tree.node(id);
                     stat(
@@ -908,6 +727,7 @@ impl Browser {
                             node.name,
                             node.size as f64 / focus.size.max(1) as f64 * 100.0
                         ),
+                        p,
                     )
                 }
                 None => stat(
@@ -915,14 +735,17 @@ impl Browser {
                     "—".into(),
                     p.faint,
                     "Nothing inside".into(),
+                    p,
                 ),
-            })
-            .child(stat(
+            },
+            stat(
                 "Marked for trash",
                 format_size(marked),
                 if count > 0 { p.mint } else { p.faint },
                 format!("{count} {}", if count == 1 { "item" } else { "items" }),
-            ))
+                p,
+            ),
+        ])
     }
 
     /// Says how many items the scan couldn't read, and offers Full Disk Access when the
@@ -1020,62 +843,35 @@ impl Browser {
                 style.border_color(mint).bg(style::gradient(over))
             })
             .on_drop(cx.listener(|this, d: &Dragged, _, cx| this.mark(d.id, cx)))
-            .child(
+            .child(tray_header(
+                match count {
+                    0 => "Drag items here, or right-click them and choose Mark for Trash.",
+                    _ => "Items go to the macOS Trash, never deleted outright.",
+                },
                 h_flex()
-                    .gap_4()
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_3()
-                            .child(style::tile(AppIcon::Trash, p.red, px(36.), p))
+                    .flex_none()
+                    .gap_1()
+                    .font_family(MONO)
+                    .text_size(px(12.))
+                    .text_color(p.dim)
+                    .map(|sum| match count {
+                        0 => sum.child("Nothing marked"),
+                        _ => sum
+                            .child(format!(
+                                "{count} {} ·",
+                                if count == 1 { "ITEM" } else { "ITEMS" }
+                            ))
                             .child(
-                                v_flex()
-                                    .min_w_0()
-                                    .gap_0p5()
-                                    .child(style::caption("Trash tray", p))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(13.))
-                                            .text_color(p.dim)
-                                            .child(match count {
-                                                0 => "Drag items here, or right-click them and choose Mark for Trash.",
-                                                _ => "Items go to the macOS Trash, never deleted outright.",
-                                            }),
-                                    ),
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(p.mint)
+                                    .child(format_size(total)),
                             ),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_none()
-                            .gap_1()
-                            .font_family(MONO)
-                            .text_size(px(12.))
-                            .text_color(p.dim)
-                            .map(|sum| match count {
-                                0 => sum.child("Nothing marked"),
-                                _ => sum
-                                    .child(format!(
-                                        "{count} {} ·",
-                                        if count == 1 { "ITEM" } else { "ITEMS" }
-                                    ))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(p.mint)
-                                            .child(format_size(total)),
-                                    ),
-                            }),
-                    ),
-            )
+                    }),
+                p,
+            ))
             .when_some(self.trash_error.clone(), |tray, error| {
-                tray.child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(p.red)
-                        .child(error),
-                )
+                tray.child(div().text_size(px(13.)).text_color(p.red).child(error))
             })
             .when(count > 0, |tray| {
                 tray.child(
@@ -1124,40 +920,14 @@ impl Render for Browser {
         if window.focused(cx).is_none() {
             window.focus(&self.focus_handle, cx);
         }
-        let narrow = window.viewport_size().width < px(980.);
+        let narrow = is_narrow(window);
         let this = cx.entity();
         let chart = self.render_chart(&p, window, cx);
         let stats = self.render_stats(&p);
         let list = self.render_list(&p, cx);
-        let content = match narrow {
-            // The page scrolls, so the chart and the list each get a fixed height.
-            true => v_flex()
-                .id("content")
-                .flex_none()
-                .gap(px(14.))
-                .child(chart.h(px(460.)))
-                .child(stats)
-                .child(list.h(px(360.))),
-            false => h_flex()
-                .id("content")
-                .flex_1()
-                .min_h_0()
-                .items_stretch()
-                .gap(px(14.))
-                .child(
-                    v_flex()
-                        .flex_1()
-                        .min_w_0()
-                        .gap(px(14.))
-                        .child(chart.flex_1().min_h_0())
-                        .child(stats),
-                )
-                .child(list.w(px(340.)).flex_none()),
-        };
+        let content = content(chart, stats, list, narrow);
 
-        v_flex()
-            .id("browser")
-            .size_full()
+        page("browser", narrow)
             .key_context("Browser")
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::quick_look))
@@ -1168,11 +938,6 @@ impl Render for Browser {
                     window.focus(&this.focus_handle, cx);
                 }
             }))
-            .px_5()
-            .pt(px(18.))
-            .pb_5()
-            .gap(px(14.))
-            .when(narrow, |page| page.overflow_y_scroll())
             .child(self.render_breadcrumb(&p, cx))
             .children(self.render_unreadable(&p))
             .child(
@@ -1182,6 +947,311 @@ impl Render for Browser {
             )
             .child(self.render_marked(&p, cx))
     }
+}
+
+/// Whether the results page stacks the chart, stats and list and scrolls.
+pub fn is_narrow(window: &Window) -> bool {
+    window.viewport_size().width < px(980.)
+}
+
+/// The results page: a header, the chart, stats and list, and the Trash tray, in that
+/// order. The running scan fills the same page, so nothing moves when it finishes.
+pub fn page(id: &'static str, narrow: bool) -> Stateful<Div> {
+    v_flex()
+        .id(id)
+        .size_full()
+        .px_5()
+        .pt(px(18.))
+        .pb_5()
+        .gap(px(14.))
+        .when(narrow, |page| page.overflow_y_scroll())
+}
+
+pub fn content(chart: Div, stats: Div, list: Div, narrow: bool) -> Stateful<Div> {
+    match narrow {
+        // The page scrolls, so the chart and the list each get a fixed height.
+        true => v_flex()
+            .id("content")
+            .flex_none()
+            .gap(px(14.))
+            .child(chart.h(px(460.)))
+            .child(stats)
+            .child(list.h(px(360.))),
+        false => h_flex()
+            .id("content")
+            .flex_1()
+            .min_h_0()
+            .items_stretch()
+            .gap(px(14.))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap(px(14.))
+                    .child(chart.flex_1().min_h_0())
+                    .child(stats),
+            )
+            .child(list.w(px(340.)).flex_none()),
+    }
+}
+
+/// The file types the drawn blocks show, for the legend.
+pub fn file_types(tree: &Tree, blocks: &[DrawBlock]) -> HashSet<FileType> {
+    blocks
+        .iter()
+        .filter_map(|b| match b.target {
+            Target::Node(id) if tree.node(id).kind != Kind::Unaccounted => {
+                Some(tree.node(id).file_type)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The chart's card: `hint` above the icicle `area`, and a legend of `types` below it.
+pub fn chart_card(
+    hint: &'static str,
+    types: HashSet<FileType>,
+    p: &Palette,
+    area: impl IntoElement,
+) -> Div {
+    let legend = FileType::ALL
+        .into_iter()
+        .filter(|t| types.contains(t))
+        .map(|t| {
+            h_flex()
+                .gap(px(7.))
+                .child(style::dot(chart::swatch(t, p.dark), px(9.)))
+                .child(t.label())
+        });
+    style::card(p)
+        .flex()
+        .flex_col()
+        .p(px(14.))
+        .pb_3()
+        .child(
+            h_flex().pb_3().justify_end().child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .font_family(MONO)
+                    .text_size(px(11.5))
+                    .text_color(p.faint)
+                    .child(hint),
+            ),
+        )
+        .child(area)
+        .child(
+            h_flex()
+                .flex_none()
+                .flex_wrap()
+                .gap_x(px(18.))
+                .gap_y_1p5()
+                .pt_3()
+                .text_size(px(12.5))
+                .text_color(p.caption)
+                .children(legend),
+        )
+}
+
+/// The card listing the children of the folder `name`, `body` holding the rows.
+pub fn list_card(name: &str, count: usize, p: &Palette, body: impl IntoElement) -> Div {
+    style::card(p)
+        .flex()
+        .flex_col()
+        .px_3()
+        .pt(px(14.))
+        .pb(px(10.))
+        .child(
+            h_flex()
+                .px_1()
+                .pb_3()
+                .gap_2()
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(16.))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child(format!("Children of {name}")),
+                )
+                .child(style::tag(format_count(count as u64), Tone::Neutral, p))
+                .child(div().flex_1())
+                .child(
+                    div()
+                        .flex_none()
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .text_color(p.faint)
+                        .child("By size ↓"),
+                ),
+        )
+        .child(body)
+}
+
+/// The Trash tray's icon, title and `message`, with `summary` on the right.
+pub fn tray_header(message: &'static str, summary: impl IntoElement, p: &Palette) -> Div {
+    h_flex()
+        .gap_4()
+        .child(
+            h_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_3()
+                .child(style::tile(AppIcon::Trash, p.red, px(36.), p))
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .gap_0p5()
+                        .child(style::caption("Trash tray", p))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_size(px(13.))
+                                .text_color(p.dim)
+                                .child(message),
+                        ),
+                ),
+        )
+        .child(summary)
+}
+
+/// A stat card under the chart.
+pub fn stat(label: &'static str, value: String, color: Hsla, detail: String, p: &Palette) -> Div {
+    style::card(p)
+        .min_w_0()
+        .px(px(14.))
+        .py_3()
+        .child(
+            div()
+                .font_family(MONO)
+                .text_size(px(11.5))
+                .text_color(p.dim)
+                .child(label),
+        )
+        .child(
+            div()
+                .mt_1()
+                .truncate()
+                .text_size(px(22.))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(color)
+                .child(value),
+        )
+        .child(
+            div()
+                .truncate()
+                .font_family(MONO)
+                .text_size(px(11.5))
+                .text_color(p.faint)
+                .child(detail),
+        )
+}
+
+/// The row of three stat cards under the chart.
+pub fn stats(cards: [Div; 3]) -> Div {
+    div()
+        .flex_none()
+        .grid()
+        .grid_cols(3)
+        .gap_3()
+        .children(cards)
+}
+
+/// A row of the children list: `id`'s name, size and share of `parent_size`. A `live`
+/// row's folder is still being scanned, so its file count and type aren't known yet.
+pub fn row(
+    tree: &Tree,
+    id: NodeId,
+    parent_size: u64,
+    hovered: bool,
+    live: bool,
+    p: &Palette,
+) -> Div {
+    let node = tree.node(id);
+    let color = chart::node_color(tree, id, p.dark);
+    let fraction = node.size as f32 / parent_size.max(1) as f32;
+    let (icon, detail): (Icon, String) = match node.kind {
+        Kind::Dir if live => (IconName::Folder.into(), "scanning…".into()),
+        Kind::Dir => (
+            IconName::Folder.into(),
+            format!(
+                "{} · {}",
+                format_files(node.file_count),
+                node.file_type.label().to_lowercase()
+            ),
+        ),
+        Kind::Unaccounted => (
+            AppIcon::CircleDashed.into(),
+            "not visible to the scan".into(),
+        ),
+        Kind::File | Kind::Symlink => {
+            (IconName::File.into(), node.file_type.label().to_lowercase())
+        }
+    };
+    let unaccounted = node.kind == Kind::Unaccounted;
+    let (wash, line_strong) = (p.wash, p.line_strong);
+
+    h_flex()
+        .size_full()
+        .gap_3()
+        .px(px(11.))
+        .rounded(px(11.))
+        .border_1()
+        .border_color(transparent_black())
+        .bg(wash.opacity(0.016))
+        .when(hovered, |row| {
+            row.bg(wash.opacity(0.035)).border_color(line_strong)
+        })
+        .child(style::tile(icon, color, px(34.), p))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap(px(2.))
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .font_weight(FontWeight::MEDIUM)
+                                .when(unaccounted, |name| name.text_color(p.dim))
+                                .child(node.name.to_string()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .font_family(MONO)
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(format_size(node.size)),
+                        ),
+                )
+                .child(
+                    h_flex()
+                        .gap_3()
+                        .font_family(MONO)
+                        .text_size(px(11.5))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(p.faint)
+                                .child(detail),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(color)
+                                .child(format!("{:.1}%", fraction * 100.0)),
+                        ),
+                )
+                .child(div().pt_1().child(style::bar(fraction, color, px(4.), p))),
+        )
 }
 
 /// Whether `id` is `ancestor` or lies inside it.
