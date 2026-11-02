@@ -1,39 +1,53 @@
-# Builds a universal Spacee DMG for each pushed version tag (v0.2.0) and attaches it
-# to a GitHub release. The app is signed ad hoc and not notarized.
+# On each push to main, releases the version in Info.plist if it has no release yet:
+# builds a universal Spacee DMG and attaches it to a new v<version> release and tag.
+# The app is signed ad hoc and not notarized.
 name: Release
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
 
 permissions:
   contents: write
+
+# A second push of the same version waits, then finds the release and stops.
+concurrency: release
 
 jobs:
   release:
     # Xcode 26 compiles the Icon Composer icon.
     runs-on: macos-26
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check that the tag matches the app version
+      - name: Find the version to release
+        id: version
         run: |
-          VERSION="$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' crates/app/Info.plist)"
-          if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match Info.plist version $VERSION" >&2
-            exit 1
+          TAG="v$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' crates/app/Info.plist)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "$TAG is already released"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: dtolnay/rust-toolchain@stable
+      - if: steps.version.outputs.new == 'true'
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@v2
+      - if: steps.version.outputs.new == 'true'
+        uses: Swatinem/rust-cache@v2
 
       - name: Build the DMG
+        if: steps.version.outputs.new == 'true'
         run: UNIVERSAL=1 scripts/dmg.sh
 
       - name: Create the release
+        if: steps.version.outputs.new == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" target/release/Spacee-*.dmg --title "Spacee ${GITHUB_REF_NAME#v}" --generate-notes
+          TAG: ${{ steps.version.outputs.tag }}
+        run: gh release create "$TAG" target/release/Spacee-*.dmg --target "$GITHUB_SHA" --title "Spacee ${TAG#v}" --generate-notes

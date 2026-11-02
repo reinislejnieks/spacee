@@ -152,14 +152,9 @@ The workspace has three crates. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) giv
 ## Release
 
 1. Set the new version in `crates/app/Info.plist` (`CFBundleShortVersionString`) and in `Cargo.toml`.
-2. Commit, then push a tag with the same version:
+2. Commit and push to `main`.
 
-   ```sh
-   git tag v0.2.0
-   git push origin v0.2.0
-   ```
-
-The Release workflow (`.github/workflows/release.yml`) makes a universal disk image and attaches it to a new GitHub release. If the tag does not match the version in `Info.plist`, the workflow stops.
+On each push to `main`, the Release workflow (`.github/workflows/release.yml`) reads the version in `Info.plist`. If that version has no release, the workflow makes a universal disk image and attaches it to a new release with the tag `v<version>`. If the version has a release, the workflow stops.
 
 ## License
 
