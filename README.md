@@ -61,7 +61,7 @@ Set `SPACEE_PERF=1` to log how long each chart paint takes. Settings are saved i
 Build a signed release bundle and install it into Applications, replacing any earlier copy. A running Spacee is quit first:
 
 ```sh
-./manage.sh install
+./manage install
 ```
 
 To build a disk image instead, with an Applications shortcut to drag the app onto:
@@ -80,7 +80,7 @@ The grant is tied to the app's signing identity. Builds signed with the same ide
 
 ## Signing
 
-`scripts/run.sh` signs the bundle with the identity in `SPACEE_SIGN_IDENTITY`, and `manage.sh install` and `scripts/dmg.sh` build through it. It defaults to the maintainer's Apple Development certificate, so on any other machine set your own:
+`scripts/run.sh` signs the bundle with the identity in `SPACEE_SIGN_IDENTITY`, and `./manage install` and `scripts/dmg.sh` build through it. It defaults to the maintainer's Apple Development certificate, so on any other machine set your own:
 
 ```sh
 security find-identity -v -p codesigning     # list identities; use the 40-character hash

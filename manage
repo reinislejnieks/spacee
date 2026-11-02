@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Project tasks. Usage: ./manage.sh install
+# Project tasks. Usage: ./manage install
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
