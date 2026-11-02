@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Project tasks. Usage: ./manage.sh install
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+case "${1:-}" in
+  install)
+    # Builds a signed release bundle and replaces /Applications/Spacee.app with it.
+    # Quits a running copy first so the old bundle isn't in use while it's swapped.
+    PROFILE=release "$ROOT/scripts/run.sh" --no-open
+    osascript -e 'quit app id "com.rlejnieks.spacee"' 2>/dev/null || true
+    rm -rf /Applications/Spacee.app
+    ditto "$ROOT/target/release/Spacee.app" /Applications/Spacee.app
+    echo "Installed /Applications/Spacee.app"
+    ;;
+  *)
+    echo "Usage: $0 install" >&2
+    exit 1
+    ;;
+esac
