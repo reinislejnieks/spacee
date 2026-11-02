@@ -42,3 +42,43 @@ fn spawn(command: &mut Command) {
         Err(e) => eprintln!("{command:?}: {e}"),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn trash_moves_the_item_to_the_trash_and_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("spacee-trash-test-{nanos}.txt");
+        let path = dir.path().join(&name);
+        std::fs::write(&path, "keep me").unwrap();
+
+        trash(&path).unwrap();
+
+        assert!(!path.exists(), "the item left its folder");
+        let in_trash = std::env::home_dir().unwrap().join(".Trash").join(&name);
+        match std::fs::read_to_string(&in_trash) {
+            Ok(contents) => {
+                assert_eq!(contents, "keep me", "the Trash holds the same file");
+                std::fs::remove_file(&in_trash).unwrap();
+            }
+            // Without Full Disk Access, macOS hides the Trash from the test process.
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                eprintln!("can't read {}: {e}", in_trash.display())
+            }
+            Err(e) => panic!("{} not found: {e}", in_trash.display()),
+        }
+    }
+
+    #[test]
+    fn trash_of_a_missing_path_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(trash(&dir.path().join("missing")).is_err());
+    }
+}
