@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Builds Spacee.app and signs it with a stable identity. macOS ties the Full
-# Disk Access grant to that identity; an ad-hoc signature would lose it on
-# every rebuild.
+# Builds Spacee.app and signs it with the identity in SPACEE_SIGN_IDENTITY, or ad
+# hoc without one. macOS ties the Full Disk Access grant to that identity; an
+# ad-hoc signature loses it on every rebuild.
 set -euo pipefail
 
 PROFILE="${PROFILE:-debug}"

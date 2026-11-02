@@ -32,7 +32,7 @@ The roadmap and design notes live in [PLAN.md](PLAN.md).
 - macOS 13 or newer
 - Rust 1.88 or newer (`rustup update stable`)
 - Xcode, not just the Command Line Tools, because GPUI compiles its Metal shaders at build time
-- A code-signing identity for the bundled app (see [Signing](#signing))
+- Optionally, a code-signing identity, so Full Disk Access survives rebuilds (see [Signing](#signing))
 
 ## Quick start
 
@@ -80,14 +80,14 @@ The grant is tied to the app's signing identity. Builds signed with the same ide
 
 ## Signing
 
-`scripts/run.sh` signs the bundle with the identity in `SPACEE_SIGN_IDENTITY`, and `./manage install` and `scripts/dmg.sh` build through it. It defaults to the maintainer's Apple Development certificate, so on any other machine set your own:
+`scripts/run.sh` signs the bundle with the identity in `SPACEE_SIGN_IDENTITY`, and `./manage install` and `scripts/dmg.sh` build through it. Without it the app is signed ad hoc, which works but loses Full Disk Access on every rebuild. To keep the grant, sign with your own certificate:
 
 ```sh
 security find-identity -v -p codesigning     # list identities; use the 40-character hash
 SPACEE_SIGN_IDENTITY=<hash> scripts/run.sh
 ```
 
-Sign by hash rather than by name. If the keychain holds two certificates with the same name, `codesign` refuses the ambiguous name. With no certificate at all, `SPACEE_SIGN_IDENTITY=-` signs ad hoc, at the cost of re-granting Full Disk Access after each build.
+Sign by hash rather than by name. If the keychain holds two certificates with the same name, `codesign` refuses the ambiguous name. To use it for every build, add `export SPACEE_SIGN_IDENTITY=<hash>` to your shell profile.
 
 ## Command-line scanner
 

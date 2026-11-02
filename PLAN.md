@@ -152,7 +152,7 @@ Each milestone ends in something you can run and check.
 1. **Visualization: icicle.** No treemap.
 2. **Deletion is in v1.** The Trash tray ships in milestone 5. Everything goes through the Trash, never permanent deletion.
 3. **Distribution: personal use for now, signed with the existing Apple Developer account.** Sign every build from milestone 0, not ad-hoc. macOS ties the Full Disk Access grant to the app's signing identity. An ad-hoc signature changes on every rebuild, so you'd have to grant Full Disk Access again after each `cargo build`. With a stable bundle ID (`com.rlejnieks.spacee`) and team ID, the grant survives rebuilds.
-   - Identity: **Apple Development** certificate, team `TEAMID`. The keychain has two certificates with the same name. Sign by SHA-1 hash `-` (the newer one, expires 2027-09-08), not by name, or `codesign` stops on an ambiguous identity.
+   - Identity: an **Apple Development** certificate, passed by SHA-1 hash in `SPACEE_SIGN_IDENTITY`. Sign by hash, not by name, or `codesign` stops when the keychain holds two certificates with the same name.
    - When it's shared, there are two routes:
      - **Direct download:** create a **Developer ID Application** certificate (developer.apple.com → Certificates), then notarize and build the `.dmg`. No sandbox, and Full Disk Access works as in development.
      - **TestFlight / App Store** (as with readerr): requires App Sandbox. The app can then only read folders the user picks in an open panel, kept across launches with security-scoped bookmarks. Upload with an Apple Distribution + Mac Installer Distribution certificate and a provisioning profile through `xcrun altool` or Transporter, since there's no Xcode project to do it automatically.
