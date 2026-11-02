@@ -256,7 +256,7 @@ impl Spacee {
         v_flex()
             .flex_none()
             .h_full()
-            .w(px(if collapsed { 68. } else { 236. }))
+            .w(px(if collapsed { 88. } else { 236. }))
             .px(px(if collapsed { 10. } else { 12. }))
             .pb_4()
             .gap(px(3.))
@@ -1107,7 +1107,7 @@ impl Render for Spacee {
         let p = Palette::of(cx);
         let viewport = window.viewport_size().width;
         let collapsed = viewport < px(880.);
-        let width = viewport - px(if collapsed { 68. } else { 236. });
+        let width = viewport - px(if collapsed { 88. } else { 236. });
         let page = match self.page {
             Page::Volumes => self.render_volumes(width, &p, cx),
             Page::Scan => self.render_scan(width, browser::is_narrow(window), &p, cx),
