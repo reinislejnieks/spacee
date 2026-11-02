@@ -11,7 +11,7 @@ A fast, native macOS disk-usage visualiser built in Rust with [GPUI](https://www
 [![GPUI](https://img.shields.io/badge/UI-GPUI-4ade9b?labelColor=0f141b)](https://www.gpui.rs/)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-4ade9b?labelColor=0f141b)](LICENSE)
 
-<img src="docs/screenshot.png" alt="Spacee showing a projects folder as an icicle chart, with its children listed by size and the Trash tray below" width="860">
+<img src="docs/screenshot.png" alt="Spacee showing a home folder as an icicle chart, with its children listed by size and the Trash tray below" width="860">
 
 </div>
 
