@@ -9,7 +9,7 @@ A fast, native macOS disk-usage visualiser built in Rust with [GPUI](https://www
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-0f141b?logo=apple&logoColor=white)](#requirements)
 [![Rust](https://img.shields.io/badge/Rust-1.88%2B-0f141b?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![GPUI](https://img.shields.io/badge/UI-GPUI-4ade9b?labelColor=0f141b)](https://www.gpui.rs/)
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-4ade9b?labelColor=0f141b)](LICENSE.md)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-4ade9b?labelColor=0f141b)](LICENSE)
 
 <img src="docs/screenshot.png" alt="Spacee showing a projects folder as an icicle chart, with its children listed by size and the Trash tray below" width="860">
 
@@ -125,4 +125,6 @@ The workspace has three crates:
 
 ## License
 
-Spacee is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md). You can use, modify and share it for any noncommercial purpose, including personal use, research, and use by charities, schools and public bodies. Commercial use needs a separate license from the author.
+Spacee is free software under the [GNU General Public License v3.0 or later](LICENSE). You can use, study, change and share it, including commercially. If you distribute a changed version, you must release its source under the same license.
+
+Spacee comes with no warranty. It only ever moves items to the Trash, so anything removed by mistake can be put back from there until the Trash is emptied.

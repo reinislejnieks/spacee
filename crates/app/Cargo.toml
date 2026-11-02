@@ -2,6 +2,7 @@
 name = "spacee"
 edition.workspace = true
 version.workspace = true
+license.workspace = true
 
 [dependencies]
 gpui-kit.workspace = true
